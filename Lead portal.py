@@ -89,19 +89,19 @@ STATIC_FILTERS = {
     # Text-based search filters
     "DBA_NAME": {"type": "text", "label": "Business Name", "column_name": "DBA_NAME"},
     "ZIP": {"type": "text", "label": "Zip Code", "column_name": "ZIP"},
-   
+    
     # Dropdown filters (populated dynamically from database)
     "STATE": {"type": "dropdown", "label": "State", "column_name": "STATE"},
     "CITY": {"type": "dropdown", "label": "City", "column_name": "CITY"},
     "PRIMARY_INDUSTRY": {"type": "dropdown", "label": "Primary Industry", "column_name": "PRIMARY_INDUSTRY"},
     "SUB_INDUSTRY": {"type": "dropdown", "label": "Sub Industry", "column_name": "SUB_INDUSTRY"},
     "SIC_CODE": {"type": "dropdown", "label": "SIC Code", "column_name": "SIC_CODE"},
-   
+    
     # Range filters for numeric values (min/max sliders)
     "REVENUE": {"type": "range", "label": "Revenue", "column_name": "REVENUE"},
     "NUMBER_OF_EMPLOYEES": {"type": "range", "label": "Number of Employees", "column_name": "NUMBER_OF_EMPLOYEES"},
     "NUMBER_OF_LOCATIONS": {"type": "range", "label": "Number of Locations", "column_name": "NUMBER_OF_LOCATIONS"},
-   
+    
     # B2B/B2C filters as selectboxes with three options
     "B2B": {
         "type": "selectbox",
@@ -154,7 +154,7 @@ st.set_page_config(page_title="Prospector POC", layout="wide")
 # =============================================================================
 
 def initialize_session_state():
-   
+    
     # Initialize all Streamlit session state variables with default values.
     # This ensures consistent state across user interactions and page refreshes.
     # Session state maintains data between Streamlit reruns and user interactions.
@@ -171,23 +171,23 @@ def initialize_session_state():
             )
             for col in STATIC_FILTERS
         },
-       
+        
         # Data Management
         "last_update_time": 0,              # Timestamp of last data refresh
         "filtered_df": pd.DataFrame(),      # Currently filtered dataset
         "active_filters": {},               # Filters actually applied to data
         "total_records": 0,                 # Total count matching current filters
-       
+        
         # Pagination
         "current_page": 1,                  # Current page number for pagination
         "page_size": DEFAULT_PAGE_SIZE,     # Records per page
-       
+        
         # Search Management
         "search_name": "",                  # Name for saving current search
         "selected_search": "",              # Currently loaded saved search
         "confirm_delete_search": False,     # Confirmation state for search deletion
         "search_to_delete": None,           # Search marked for deletion
-       
+        
         # UI State Management
         "filter_update_trigger": {          # Tracks when dropdown filters need refreshing
             col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] == "dropdown"
@@ -195,18 +195,18 @@ def initialize_session_state():
         "reset_counter": 0,                 # Triggers filter reset when incremented
         "sidebar_collapsed": False,         # Controls sidebar visibility
         "data_editor_refresh_counter": 0,   # Forces data editor refresh
-       
+        
         # Map Interaction
         "map_style_selector": ":material/dark_mode:",  # Current map style
         "selected_business_indices": [],    # Businesses selected on map
         "business_search_term": "",         # Search term for business filtering
-       
+        
         # Salesforce Integration (Simple ID tracking approach)
         "sf_pushed_count": 0,              # Count of businesses marked for Salesforce
         "sf_business_ids": [],             # List of business IDs to push to Salesforce
         "sf_last_update": datetime.now().isoformat()  # Timestamp of last Salesforce update
     }
-   
+    
     # Only set defaults for keys that don't already exist
     # This preserves existing session state across reruns
     for key, value in defaults.items():
@@ -224,7 +224,7 @@ def get_current_user(session):
             "SELECT SYSTEM$GET_SESSION_PROPERTY('USER')",  # <-- Alternative 2
             "SELECT SESSION_USER"              # <-- Alternative 3
         ]
-       
+        
         for query in user_queries:
             try:
                 result = session.sql(query).collect()
@@ -233,10 +233,10 @@ def get_current_user(session):
                     return user  # <-- Returns actual Snowflake username
             except:
                 continue
-       
+        
         # Clean fallback for Streamlit in Snowflake
         return "SIS_USER"  # <-- Fallback if all methods fail
-       
+        
     except Exception as e:
         return "SIS_USER"
 
@@ -247,31 +247,31 @@ def get_current_user(session):
 def add_business_to_salesforce(business_id):
     """
     Track a business ID for Salesforce lead push.
-   
+    
     Args:
         business_id: The unique identifier of the business to track
-       
+        
     Returns:
         bool: True if business was newly added, False if already exists
     """
     # Ensure we're working with a string ID for consistency
     business_id_str = str(business_id)
-   
+    
     # Initialize the tracking list if it doesn't exist
     if "sf_business_ids" not in st.session_state:
         st.session_state.sf_business_ids = []
-   
+    
     # Check if already tracked to avoid duplicates
     if business_id_str in st.session_state.sf_business_ids:
         return False
-   
+    
     # Add the new business ID
     st.session_state.sf_business_ids.append(business_id_str)
-   
+    
     # Update the counter and timestamp
     st.session_state.sf_pushed_count = len(st.session_state.sf_business_ids)
     st.session_state.sf_last_update = datetime.now().isoformat()
-   
+    
     return True
 
 def run_cortex_analyst(sidebar_prompt, session, _snowflake, CORTEX_MODEL_PATH, API_ENDPOINT, API_TIMEOUT, rerun_on_success=True):
@@ -320,24 +320,24 @@ def run_cortex_analyst(sidebar_prompt, session, _snowflake, CORTEX_MODEL_PATH, A
 def add_businesses_to_salesforce(business_df):
     """
     Track multiple businesses for Salesforce lead push from a DataFrame.
-   
+    
     Args:
         business_df: DataFrame containing businesses to track (uses index as ID)
-       
+        
     Returns:
         int: Number of businesses newly added to tracking
     """
     if business_df.empty:
         return 0
-   
+    
     # Extract business IDs and track new additions
     business_ids = business_df.index.tolist()
     newly_added = 0
-   
+    
     for business_id in business_ids:
         if add_business_to_salesforce(business_id):
             newly_added += 1
-   
+    
     return newly_added
 
 # =============================================================================
@@ -376,7 +376,7 @@ st.markdown("""
     <style>
     /* Import DM Sans font from Google Fonts - Global Payments brand typography */
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
-   
+    
     /* Root variables for responsive design and Global Payments colors */
     :root {
         /* Responsive Design Variables */
@@ -388,19 +388,19 @@ st.markdown("""
         --card-gap: 1rem;
         --section-spacing: 1.5rem;
         --grid-columns: 3;
-       
+        
         /* Data Editor Variables */
         --data-editor-height: 500px;
         --data-editor-cell-padding: 8px;
-       
+        
         /* Map View Variables */
         --map-height: 60vh;
         --map-controls-width: 280px;
-       
+        
         /* Responsive Breakpoints */
         --tablet: 768px;
         --laptop: 1024px;
-       
+        
         /* Core Global Payments Colors - Essential Only */
         --gp-primary: #262AFF;          /* Global Blue - primary brand color */
         --gp-accent: #1CABFF;           /* Pulse Blue - accent color */
@@ -410,7 +410,7 @@ st.markdown("""
         --gp-charcoal: #595959;
         --gp-smoke: #C4C4C4;
         --gp-haze: #F4F4F4;
-       
+        
         /* Semantic Colors - Simplified */
         --gp-success: var(--gp-accent);
         --gp-warning: #FFCC00;
@@ -420,19 +420,19 @@ st.markdown("""
         --gp-border: var(--gp-smoke);
         --gp-text-primary: var(--gp-black);
         --gp-text-secondary: var(--gp-charcoal);
-       
+        
         /* Typography - DM Sans as primary font */
         --font-family-primary: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
         --line-height-base: 1.5;
         --letter-spacing-base: 0;
-       
+        
         /* Elevation and Shadow System */
         --gp-shadow-sm: 0 1px 3px rgba(38, 42, 255, 0.08);
         --gp-shadow-md: 0 2px 8px rgba(38, 42, 255, 0.1);
         --gp-shadow-lg: 0 4px 16px rgba(38, 42, 255, 0.12);
         --gp-shadow-xl: 0 8px 32px rgba(38, 42, 255, 0.15);
         --gp-shadow-hover: 0 6px 20px rgba(38, 42, 255, 0.2);
-       
+        
         /* Border Radius System */
         --gp-radius-sm: 4px;
         --gp-radius-md: 6px;
@@ -440,7 +440,7 @@ st.markdown("""
         --gp-radius-xl: 12px;
         --gp-radius-2xl: 16px;
         --gp-radius-full: 50%;
-       
+        
         /* Spacing System */
         --gp-space-xs: 0.25rem;
         --gp-space-sm: 0.5rem;
@@ -448,13 +448,13 @@ st.markdown("""
         --gp-space-lg: 1.5rem;
         --gp-space-xl: 2rem;
         --gp-space-2xl: 3rem;
-       
+        
         /* Animation and Transition System */
         --gp-transition-fast: 0.15s ease-out;
         --gp-transition-base: 0.2s ease-out;
         --gp-transition-slow: 0.3s ease-out;
         --gp-transition-slower: 0.5s ease-out;
-       
+        
         /* Animation Timing Functions */
         --gp-ease-in: cubic-bezier(0.4, 0, 1, 1);
         --gp-ease-out: cubic-bezier(0, 0, 0.2, 1);
@@ -468,7 +468,7 @@ st.markdown("""
         font-family: var(--font-family-primary) !important;
         line-height: var(--line-height-base);
     }
-   
+    
     /* Apply DM Sans to main content areas but not icon components */
     .main .block-container,
     [data-testid="stSidebar"],
@@ -478,8 +478,8 @@ st.markdown("""
     [data-testid="stMarkdown"],
     [data-testid="stText"],
     [data-testid="metric-container"],
-    .stSelectbox label,
-    .stTextInput label,
+    .stSelectbox label, 
+    .stTextInput label, 
     .stNumberInput label,
     .stMultiSelect label,
     .stSlider label,
@@ -490,18 +490,18 @@ st.markdown("""
     }
 
     /* Targeted text styling - DM Sans for specific text elements */
-    h1, h2, h3, h4, h5, h6, p,
+    h1, h2, h3, h4, h5, h6, p, 
     .stMarkdown, .stText, .stHeader, .stSubheader, .stTitle,
     .stDataFrame, .stTable, .stMetric,
-    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"], 
     [data-testid="stText"],
     [data-testid="metric-container"] {
         font-family: var(--font-family-primary) !important;
         line-height: var(--line-height-base);
     }
-   
+    
     /* Input and select styling */
-    .stSelectbox select, .stMultiSelect select,
+    .stSelectbox select, .stMultiSelect select, 
     .stSelectbox option, .stMultiSelect option,
     .stTextInput input, .stNumberInput input {
         font-family: var(--font-family-primary) !important;
@@ -533,28 +533,28 @@ st.markdown("""
     /* =============================================================================
      * CORE ANIMATIONS - Consolidated and Optimized
      * ============================================================================= */
-   
+    
     @keyframes gp-fade-in {
         from { opacity: 0; transform: translateY(10px); }
         to { opacity: 1; transform: translateY(0); }
     }
-   
+    
     @keyframes gp-scale-in {
         from { opacity: 0; transform: scale(0.9); }
         to { opacity: 1; transform: scale(1); }
     }
-   
+    
     @keyframes gp-pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.7; }
     }
-   
+    
     @keyframes gp-shake {
         0%, 100% { transform: translateX(0); }
         10%, 30%, 50%, 70%, 90% { transform: translateX(-2px); }
         20%, 40%, 60%, 80% { transform: translateX(2px); }
     }
-   
+    
     @keyframes gp-rotate {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
@@ -563,23 +563,23 @@ st.markdown("""
     /* =============================================================================
      * ESSENTIAL ANIMATION CLASSES - Streamlined
      * ============================================================================= */
-   
+    
     .gp-animate-fade-in {
         animation: gp-fade-in var(--gp-transition-base) var(--gp-ease-out) forwards;
     }
-   
+    
     .gp-animate-scale-in {
         animation: gp-scale-in var(--gp-transition-base) var(--gp-ease-back) forwards;
     }
-   
+    
     .gp-animate-pulse {
         animation: gp-pulse 2s infinite;
     }
-   
+    
     .gp-animate-spin {
         animation: gp-rotate 1s linear infinite;
     }
-   
+    
     .gp-animate-shake {
         animation: gp-shake 0.5s ease-in-out;
     }
@@ -587,11 +587,11 @@ st.markdown("""
     /* =============================================================================
      * CORE TRANSITIONS - Simplified
      * ============================================================================= */
-   
+    
     .gp-transition {
         transition: all var(--gp-transition-base);
     }
-   
+    
     .gp-transition-fast {
         transition: all var(--gp-transition-fast);
     }
@@ -599,12 +599,12 @@ st.markdown("""
     /* =============================================================================
      * ESSENTIAL HOVER EFFECTS
      * ============================================================================= */
-   
+    
     .gp-hover-lift:hover {
         transform: translateY(-2px);
         box-shadow: var(--gp-shadow-lg);
     }
-   
+    
     .gp-focus-ring:focus {
         outline: 2px solid var(--gp-primary);
         outline-offset: 2px;
@@ -614,13 +614,13 @@ st.markdown("""
     /* =============================================================================
      * UTILITY CLASSES - Reusable UI Components
      * ============================================================================= */
-   
+    
     /* Essential Spacing Utilities - Most Used Only */
     .gp-mb-md { margin-bottom: var(--gp-space-md) !important; }
     .gp-p-md { padding: var(--gp-space-md) !important; }
     .gp-gap-md { gap: var(--gp-space-md) !important; }
     .gp-section-spacing { margin-top: var(--gp-space-lg) !important; }
-   
+    
     /* Common Gradient Utilities */
     .gp-gradient-primary { background: linear-gradient(135deg, var(--gp-primary) 0%, var(--gp-accent) 100%) !important; }
     .gp-gradient-surface { background: linear-gradient(135deg, var(--gp-surface) 0%, var(--gp-background) 100%) !important; }
@@ -629,7 +629,7 @@ st.markdown("""
     .gp-gradient-muted { background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%) !important; }
     .gp-gradient-dark { background: linear-gradient(135deg, #1a1b23 0%, #2e3748 100%) !important; }
     .gp-gradient-hover { background: linear-gradient(135deg, #1b1c6e 0%, #2d5a87 100%) !important; }
-   
+    
     /* Common Container Styles */
     .gp-container-elevated {
         background: var(--gp-background);
@@ -638,7 +638,7 @@ st.markdown("""
         box-shadow: var(--gp-shadow-md);
         padding: var(--gp-space-md);
     }
-   
+    
     /* Inline Style Utilities */
     .gp-center-text { text-align: center !important; }
     .gp-bold { font-weight: 600 !important; }
@@ -646,18 +646,18 @@ st.markdown("""
     .gp-color-white { color: var(--gp-white) !important; }
     .gp-font-sm { font-size: 0.8rem !important; }
     .gp-font-xs { font-size: 0.7rem !important; }
-   
+    
     /* Apply gradients to specific components */
     .business-details-card h3,
     .step-icon,
     .gp-progress-bar {
         background: var(--gp-gradient-primary) !important;
     }
-   
+    
     .business-data-timeline {
         background: var(--gp-gradient-surface) !important;
     }
-   
+    
     /* Apply gradient utility classes to other elements */
     .gp-apply-primary-gradient { background: var(--gp-gradient-primary) !important; }
     .gp-apply-surface-gradient { background: var(--gp-gradient-surface) !important; }
@@ -672,19 +672,19 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
-   
+    
     .gp-card:hover {
         box-shadow: var(--gp-shadow-md);
         transform: translateY(-2px) scale(1.01);
         border-color: var(--gp-accent);
     }
-   
+    
     .gp-card-header {
         border-bottom: 1px solid var(--gp-border);
         padding-bottom: var(--gp-space-sm);
         margin-bottom: var(--gp-space-md);
     }
-   
+    
     .gp-card-title {
         font-size: 1.1rem;
         font-weight: 600;
@@ -692,11 +692,11 @@ st.markdown("""
         margin: 0;
         font-family: var(--font-family-primary);
     }
-   
+    
 
-   
+    
 
-   
+    
     /* Status Indicator Component */
     .gp-status {
         display: inline-flex;
@@ -705,107 +705,107 @@ st.markdown("""
         font-size: 0.8rem;
         font-family: var(--font-family-primary);
     }
-   
+    
     .gp-status-dot {
         width: 8px;
         height: 8px;
         border-radius: var(--gp-radius-full);
         flex-shrink: 0;
     }
-   
+    
     .gp-status-active .gp-status-dot {
         background-color: var(--gp-success);
         box-shadow: 0 0 0 2px rgba(28, 171, 255, 0.2);
     }
-   
+    
     .gp-status-inactive .gp-status-dot {
         background-color: var(--gp-border);
     }
-   
+    
     .gp-status-error .gp-status-dot {
         background-color: var(--gp-error);
         box-shadow: 0 0 0 2px rgba(244, 54, 76, 0.2);
     }
-   
+    
     .gp-status-warning .gp-status-dot {
         background-color: var(--gp-warning);
         box-shadow: 0 0 0 2px rgba(255, 204, 0, 0.2);
     }
-   
+    
     /* Layout Components */
     .gp-flex {
         display: flex;
     }
-   
+    
     .gp-flex-col {
         flex-direction: column;
     }
-   
+    
     .gp-flex-wrap {
         flex-wrap: wrap;
     }
-   
+    
     .gp-items-center {
         align-items: center;
     }
-   
+    
     .gp-items-start {
         align-items: flex-start;
     }
-   
+    
     .gp-items-end {
         align-items: flex-end;
     }
-   
+    
     .gp-justify-center {
         justify-content: center;
     }
-   
+    
     .gp-justify-between {
         justify-content: space-between;
     }
-   
+    
     .gp-justify-start {
         justify-content: flex-start;
     }
-   
+    
     .gp-justify-end {
         justify-content: flex-end;
     }
-   
+    
     .gp-grid {
         display: grid;
     }
-   
+    
     .gp-grid-cols-1 { grid-template-columns: repeat(1, 1fr); }
     .gp-grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
     .gp-grid-cols-3 { grid-template-columns: repeat(3, 1fr); }
     .gp-grid-cols-4 { grid-template-columns: repeat(4, 1fr); }
     .gp-grid-cols-auto { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
-   
+    
     .gp-w-full { width: 100%; }
     .gp-h-full { height: 100%; }
-   
+    
     /* Text Utilities */
     .gp-text-center { text-align: center; }
     .gp-text-left { text-align: left; }
     .gp-text-right { text-align: right; }
-   
+    
     .gp-text-sm { font-size: 0.8rem; }
     .gp-text-base { font-size: 1rem; }
     .gp-text-lg { font-size: 1.1rem; }
     .gp-text-xl { font-size: 1.25rem; }
-   
+    
     .gp-font-medium { font-weight: 500; }
     .gp-font-semibold { font-weight: 600; }
     .gp-font-bold { font-weight: 700; }
-   
+    
     .gp-text-primary { color: var(--gp-text-primary); }
     .gp-text-secondary { color: var(--gp-text-secondary); }
     .gp-text-success { color: var(--gp-success); }
     .gp-text-warning { color: var(--gp-warning); }
     .gp-text-error { color: var(--gp-error); }
-   
+    
     /* Metric Display Components */
     .gp-metric {
         background: var(--gp-background);
@@ -816,13 +816,13 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
-   
+    
     .gp-metric:hover {
         border-color: var(--gp-primary);
         box-shadow: var(--gp-shadow-md);
         transform: translateY(-1px);
     }
-   
+    
     .gp-metric::before {
         content: '';
         position: absolute;
@@ -834,11 +834,11 @@ st.markdown("""
         opacity: 0;
         transition: opacity 0.2s ease;
     }
-   
+    
     .gp-metric:hover::before {
         opacity: 1;
     }
-   
+    
     .gp-metric-label {
         font-size: 0.7rem;
         font-weight: 500;
@@ -848,7 +848,7 @@ st.markdown("""
         margin-bottom: var(--gp-space-xs);
         font-family: var(--font-family-primary);
     }
-   
+    
     .gp-metric-value {
         font-size: 1.5rem;
         font-weight: 600;
@@ -857,7 +857,7 @@ st.markdown("""
         margin-bottom: var(--gp-space-xs);
         font-family: var(--font-family-primary);
     }
-   
+    
     .gp-metric-change {
         font-size: 0.8rem;
         font-weight: 500;
@@ -866,27 +866,27 @@ st.markdown("""
         gap: var(--gp-space-xs);
         font-family: var(--font-family-primary);
     }
-   
+    
     .gp-metric-change.positive {
         color: var(--gp-success);
     }
-   
+    
     .gp-metric-change.negative {
         color: var(--gp-error);
     }
-   
+    
     .gp-metric-change.neutral {
         color: var(--gp-text-secondary);
     }
-   
+    
     .gp-metric-sm .gp-metric-value {
         font-size: 1.2rem;
     }
-   
+    
     .gp-metric-lg .gp-metric-value {
         font-size: 2rem;
     }
-   
+    
     .gp-metric-icon {
         position: absolute;
         top: var(--gp-space-md);
@@ -895,7 +895,7 @@ st.markdown("""
         opacity: 0.6;
         color: var(--gp-primary);
     }
-   
+    
     /* Loading State Components - Enhanced with animations */
     .gp-loading {
         display: inline-flex;
@@ -909,7 +909,7 @@ st.markdown("""
         font-size: 0.9rem;
         animation: gp-fade-in var(--gp-transition-base) var(--gp-ease-out);
     }
-   
+    
     .gp-spinner {
         width: 16px;
         height: 16px;
@@ -918,39 +918,39 @@ st.markdown("""
         border-radius: var(--gp-radius-full);
         animation: gp-rotate 1s linear infinite;
     }
-   
+    
     .gp-spinner-lg {
         width: 24px;
         height: 24px;
         border-width: 3px;
     }
-   
+    
     .gp-spinner-sm {
         width: 12px;
         height: 12px;
         border-width: 1px;
     }
-   
+    
     .gp-skeleton {
         background: linear-gradient(90deg, var(--gp-surface) 25%, var(--gp-border) 50%, var(--gp-surface) 75%);
         background-size: 200% 100%;
         animation: gp-skeleton-loading 1.5s infinite;
         border-radius: var(--gp-radius-md);
     }
-   
+    
     @keyframes gp-skeleton-loading {
         0% { background-position: 200% 0; }
         100% { background-position: -200% 0; }
     }
-   
+    
     .gp-skeleton-text {
         height: 1em;
         margin: var(--gp-space-xs) 0;
     }
-   
+    
     .gp-skeleton-text.gp-skeleton-sm { height: 0.8em; }
     .gp-skeleton-text.gp-skeleton-lg { height: 1.2em; }
-   
+    
     /* Progress Bar Component */
     .gp-progress {
         width: 100%;
@@ -960,7 +960,7 @@ st.markdown("""
         overflow: hidden;
         position: relative;
     }
-   
+    
     .gp-progress-bar {
         height: 100%;
         border-radius: var(--gp-radius-full);
@@ -968,7 +968,7 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
-   
+    
     .gp-progress-bar::after {
         content: '';
         position: absolute;
@@ -979,54 +979,54 @@ st.markdown("""
         background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
         animation: gp-progress-indeterminate 2s infinite linear;
     }
-   
+    
     .gp-progress-sm {
         height: 4px;
     }
-   
+    
     .gp-progress-lg {
         height: 12px;
     }
-   
+    
 
-   
+    
 
-   
+    
 
-   
+    
 
-   
+    
     /* =============================================================================
      * STREAMLIT SPECIFIC ANIMATIONS - Simplified
      * ============================================================================= */
-   
+    
     /* Animate Streamlit components on load */
     [data-testid="stMarkdown"] {
         animation: gp-fade-in var(--gp-transition-base) var(--gp-ease-out);
     }
-   
+    
     [data-testid="stMetric"] {
         animation: gp-fade-in var(--gp-transition-slow) var(--gp-ease-out);
     }
-   
+    
     [data-testid="stDataFrame"] {
         animation: gp-fade-in var(--gp-transition-slow) var(--gp-ease-out);
     }
-   
+    
     /* Sidebar animation */
     [data-testid="stSidebar"] {
         animation: gp-fade-in var(--gp-transition-slower) var(--gp-ease-out);
     }
-   
+    
     /* Main content animation */
     .main .block-container {
         animation: gp-fade-in var(--gp-transition-slower) var(--gp-ease-out);
     }
-   
+    
     /* =============================================================================
      * ACCESSIBILITY - Respect user's motion preferences
      * ============================================================================= */
-   
+    
     @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -1036,13 +1036,13 @@ st.markdown("""
             transition-duration: 0.01ms !important;
             scroll-behavior: auto !important;
         }
-       
+        
         .gp-animate-pulse,
         .gp-animate-spin {
             animation: none;
         }
     }
-   
+    
     /* Responsive Utilities */
     @media (max-width: 768px) {
         .gp-hidden-mobile { display: none !important; }
@@ -1050,31 +1050,31 @@ st.markdown("""
         .gp-text-mobile-sm { font-size: 0.8rem !important; }
         .gp-p-mobile-sm { padding: var(--gp-space-sm) !important; }
     }
-   
+    
     @media (min-width: 769px) {
         .gp-hidden-desktop { display: none !important; }
     }
-   
+    
     /* =============================================================================
      * END UTILITY CLASSES
-     *
+     * 
      * USAGE EXAMPLES:
-     *
+     * 
      * Basic Card:
      * st.markdown('<div class="gp-card"><h3 class="gp-card-title">Title</h3><p>Content</p></div>', unsafe_allow_html=True)
-     *
+     * 
      * Metric Display:
      * st.markdown('<div class="gp-metric"><div class="gp-metric-label">Revenue</div><div class="gp-metric-value">$1.2M</div></div>', unsafe_allow_html=True)
-     *
+     * 
      * Flex Layout:
      * st.markdown('<div class="gp-flex gp-items-center gp-justify-between gp-gap-md">Content</div>', unsafe_allow_html=True)
-     *
+     * 
      * Grid Layout:
      * st.markdown('<div class="gp-grid gp-grid-cols-3 gp-gap-md">Grid Items</div>', unsafe_allow_html=True)
-     *
+     * 
      * Loading State:
      * st.markdown('<div class="gp-loading"><div class="gp-spinner"></div>Loading...</div>', unsafe_allow_html=True)
-     *
+     * 
      * ============================================================================= */
 
     /* Button styling - Enhanced with animation system */
@@ -1094,7 +1094,7 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
-   
+    
     .stButton > button::before {
         content: '';
         position: absolute;
@@ -1105,31 +1105,31 @@ st.markdown("""
         background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
         transition: left var(--gp-transition-slow) var(--gp-ease-out);
     }
-   
+    
     .stButton > button:hover::before {
         left: 100%;
     }
-   
+    
     .stButton > button[kind="secondary"] {
         background-color: var(--gp-surface);
         color: var(--gp-text-primary);
         border: 2px solid var(--gp-border);
         font-family: var(--font-family-primary) !important;
     }
-   
+    
     .stButton > button:hover {
         background-color: var(--gp-deep-blue);
         transform: translateY(-1px) scale(1.02);
         box-shadow: var(--gp-shadow-hover);
     }
-   
+    
     .stButton > button[kind="secondary"]:hover {
         background-color: var(--gp-surface);
         border-color: var(--gp-accent);
         transform: translateY(-1px);
         box-shadow: var(--gp-shadow-md);
     }
-   
+    
     .stButton > button:active {
         transform: translateY(0) scale(0.98);
         transition: all var(--gp-transition-fast);
@@ -1147,25 +1147,25 @@ st.markdown("""
         transition: all var(--gp-transition-base) var(--gp-ease-out);
         position: relative;
     }
-   
+    
     .stTextInput > div > input:hover, .stNumberInput > div > input:hover {
         border-color: var(--gp-accent);
         box-shadow: 0 0 0 1px rgba(28, 171, 255, 0.1);
     }
-   
+    
     .stTextInput > div > input:focus, .stNumberInput > div > input:focus {
         border-color: var(--gp-primary);
         box-shadow: 0 0 0 3px rgba(38, 42, 255, 0.1);
         outline: none;
         transform: scale(1.01);
     }
-   
+    
     .stSelectbox > div, .stMultiSelect > div {
         font-size: var(--font-size-base);
         width: 100%;
         font-family: var(--font-family-primary) !important;
     }
-   
+    
     .stSelectbox > div > div {
         border: 2px solid var(--gp-border);
         border-radius: var(--gp-radius-md);
@@ -1173,12 +1173,12 @@ st.markdown("""
         font-family: var(--font-family-primary) !important;
         transition: all var(--gp-transition-base) var(--gp-ease-out);
     }
-   
+    
     .stSelectbox > div > div:hover {
         border-color: var(--gp-accent);
         box-shadow: var(--gp-shadow-sm);
     }
-   
+    
     .stSelectbox > div > div:focus-within {
         border-color: var(--gp-primary);
         box-shadow: 0 0 0 3px rgba(38, 42, 255, 0.1);
@@ -1211,29 +1211,29 @@ st.markdown("""
         white-space: nowrap !important;
         border-bottom: 2px solid var(--gp-primary) !important;
     }
-   
+    
     /* Data editor responsiveness */
     .stDataEditor td {
         padding: var(--data-editor-cell-padding) !important;
     }
-   
+    
     /* Custom scrollbar for data frames */
     .stDataFrame::-webkit-scrollbar, .stDataEditor::-webkit-scrollbar {
         width: 8px;
         height: 8px;
     }
-   
+    
     .stDataFrame::-webkit-scrollbar-track, .stDataEditor::-webkit-scrollbar-track {
         background: var(--gp-surface);
         border-radius: var(--gp-radius-sm);
     }
-   
+    
     .stDataFrame::-webkit-scrollbar-thumb, .stDataEditor::-webkit-scrollbar-thumb {
         background: var(--gp-border);
         border-radius: var(--gp-radius-sm);
         transition: background 0.2s ease;
     }
-   
+    
     .stDataFrame::-webkit-scrollbar-thumb:hover, .stDataEditor::-webkit-scrollbar-thumb:hover {
         background: var(--gp-accent);
     }
@@ -1254,7 +1254,7 @@ st.markdown("""
         border-radius: var(--gp-radius-lg);
         box-shadow: var(--gp-shadow-sm);
     }
-   
+    
     /* Responsive pagination layout */
     .page-navigation-container {
         display: flex;
@@ -1262,20 +1262,20 @@ st.markdown("""
         width: 100%;
         margin: 0.5rem 0;
     }
-   
+    
     .page-size-controls {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
         gap: 0.5rem;
     }
-   
+    
     .pagination-nav-buttons {
         display: flex;
         align-items: center;
         justify-content: flex-end;
     }
-   
+    
     .pagination-status {
         margin-top: 0.25rem;
         width: 100%;
@@ -1341,7 +1341,7 @@ st.markdown("""
         border-radius: 12px;
         background: rgba(255, 255, 255, 0.2);
     }
-   
+    
     /* Data Visualization Cards style - grouped dashboard sections */
     .business-data-dashboard {
         padding: 0.5rem;
@@ -1394,7 +1394,7 @@ st.markdown("""
         background: var(--gp-primary);
         border-radius: var(--gp-radius-sm);
     }
-   
+    
     /* Salesforce push status in header */
     .business-name-container {
         display: flex;
@@ -1406,7 +1406,7 @@ st.markdown("""
     .sf-push-status {
         color: white;
         font-size: 11px;
-        background-color: rgba(255, 255, 255, 0.25);
+        background-color: rgba(255, 255, 255, 0.25); 
         padding: 2px 6px;
         border-radius: 10px;
         margin-left: auto;  /* Push to the right */
@@ -1415,7 +1415,7 @@ st.markdown("""
         backdrop-filter: blur(10px);
         text-align: right;  /* Ensure right alignment */
     }
-   
+    
     .data-viz-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1498,7 +1498,7 @@ st.markdown("""
         box-shadow: var(--gp-shadow-lg);
         overflow: hidden;
     }
-   
+    
     .business-data-timeline::before {
         content: '';
         position: absolute;
@@ -1510,14 +1510,14 @@ st.markdown("""
         border-radius: var(--gp-radius-sm);
         box-shadow: 0 0 10px rgba(38, 42, 255, 0.3);
     }
-   
+    
     .timeline-header {
         text-align: center;
         margin-bottom: 40px;
         padding-bottom: 20px;
         border-bottom: 2px solid var(--gp-border);
     }
-   
+    
     .timeline-header h3 {
         font-family: var(--font-family-primary);
         font-weight: 700;
@@ -1525,7 +1525,7 @@ st.markdown("""
         margin: 0;
         font-size: 24px;
     }
-   
+    
     .timeline-step {
         position: relative;
         margin-left: 80px;
@@ -1537,13 +1537,13 @@ st.markdown("""
         box-shadow: var(--gp-shadow-sm);
         transition: all 0.3s ease;
     }
-   
+    
     .timeline-step:hover {
         transform: translateX(8px);
         box-shadow: var(--gp-shadow-lg);
         border-color: var(--gp-primary);
     }
-   
+    
     .timeline-step::before {
         content: '';
         position: absolute;
@@ -1558,7 +1558,7 @@ st.markdown("""
         box-shadow: 0 0 0 3px var(--gp-primary), 0 0 15px rgba(38, 42, 255, 0.4);
         z-index: 2;
     }
-   
+    
     .timeline-step::after {
         content: '';
         position: absolute;
@@ -1572,14 +1572,14 @@ st.markdown("""
         border-left: 12px solid var(--gp-primary);
         z-index: 1;
     }
-   
+    
     .step-header {
         display: flex;
         align-items: center;
         gap: 12px;
         margin-bottom: 16px;
     }
-   
+    
     .step-icon {
         font-size: 24px;
         padding: 8px;
@@ -1591,7 +1591,7 @@ st.markdown("""
         height: 40px;
         color: var(--gp-white);
     }
-   
+    
     .step-title {
         font-family: var(--font-family-primary);
         font-weight: 600;
@@ -1599,13 +1599,13 @@ st.markdown("""
         font-size: 16px;
         margin: 0;
     }
-   
+    
     .step-content {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 12px;
     }
-   
+    
     .process-item {
         background: var(--gp-surface);
         padding: 12px 16px;
@@ -1617,21 +1617,21 @@ st.markdown("""
         transition: all 0.2s ease;
         box-shadow: var(--gp-shadow-sm);
     }
-   
+    
     .process-item:hover {
         background: var(--gp-surface);
         transform: scale(1.02);
         border-left-color: var(--gp-accent);
         box-shadow: var(--gp-shadow-md);
     }
-   
+    
     .process-item-icon {
         font-size: 16px;
         opacity: 0.8;
         align-self: flex-start;
         color: var(--gp-primary);
     }
-   
+    
     .process-item-label {
         font-family: var(--font-family-primary);
         font-size: 11px;
@@ -1641,7 +1641,7 @@ st.markdown("""
         letter-spacing: 0.5px;
         margin-bottom: 2px;
     }
-   
+    
     .process-item-value {
         font-family: var(--font-family-primary);
         font-size: 14px;
@@ -1649,17 +1649,17 @@ st.markdown("""
         color: var(--gp-text-primary);
         line-height: 1.3;
     }
-   
+    
     .process-item-value a {
         color: var(--gp-primary);
         text-decoration: none;
     }
-   
+    
     .process-item-value a:hover {
         text-decoration: underline;
         color: var(--gp-accent);
     }
-   
+    
     .timeline-completion {
         position: relative;
         margin-left: 80px;
@@ -1670,7 +1670,7 @@ st.markdown("""
         border-radius: var(--gp-radius-xl);
         box-shadow: var(--gp-shadow-lg);
     }
-   
+    
     .timeline-completion::before {
         content: '✓';
         position: absolute;
@@ -1703,17 +1703,17 @@ st.markdown("""
         box-shadow: var(--gp-shadow-md);
         transition: all 0.2s ease;
     }
-   
+    
     div[data-testid="stDeckGlJsonChart"]:hover {
         border-color: var(--gp-primary);
         box-shadow: var(--gp-shadow-lg);
     }
-   
+    
     /* Force map height with higher specificity */
     div[data-testid="stDeckGlJsonChart"] > div {
         height: 100% !important;
     }
-   
+    
     div[data-testid="stDeckGlJsonChart"] iframe {
         height: 100% !important;
     }
@@ -1730,13 +1730,13 @@ st.markdown("""
         white-space: nowrap;
         min-width: fit-content;
     }
-   
+    
     /* Sidebar styling with enhanced component system */
     div[data-testid="stSidebar"] {
         background-color: var(--gp-surface) !important;
         border-right: 3px solid var(--gp-primary) !important;
     }
-   
+    
     div[data-testid="stSidebar"] .stButton > button {
         width: 100%;
         padding: 0.5rem;
@@ -1766,7 +1766,7 @@ st.markdown("""
         border-color: var(--gp-accent);
         transform: translateY(-1px);
     }
-   
+    
     div[data-testid="stSidebar"] .stTextInput > div > input,
     div[data-testid="stSidebar"] .stNumberInput > div > input {
         font-size: 0.9rem;
@@ -1784,7 +1784,7 @@ st.markdown("""
         box-shadow: 0 0 0 3px rgba(38, 42, 255, 0.1);
         outline: none;
     }
-   
+    
     div[data-testid="stSidebar"] .stSelectbox > div,
     div[data-testid="stSidebar"] .stMultiSelect > div {
         font-size: 0.9rem;
@@ -1797,7 +1797,7 @@ st.markdown("""
         background-color: var(--gp-background);
         transition: all 0.2s ease;
     }
-   
+    
     div[data-testid="stSidebar"] .stMarkdown,
     div[data-testid="stSidebar"] label,
     div[data-testid="stSidebar"] .stCheckbox > label {
@@ -1906,13 +1906,14 @@ def get_filtered_dataframe(df, filters, display_columns=None):
             elif "Show only" in value:
                 filtered_df = filtered_df[filtered_df[col_name] == 1]
             # "Include" means no filter
-    # Standardize output columns
-    if display_columns is not None:
-        missing_cols = [col for col in display_columns if col not in filtered_df.columns]
-        if missing_cols:
-            # Only select columns that exist
-            display_columns = [col for col in display_columns if col in filtered_df.columns]
-        filtered_df = filtered_df[display_columns]
+    # Ensure IS_B2B column is always present in output
+    if "IS_B2B" not in filtered_df.columns and "IS_B2B" in df.columns:
+        filtered_df["IS_B2B"] = df["IS_B2B"]
+    # Always show all columns in the data editor, merging missing columns from the source DataFrame
+    for col in df.columns:
+        if col not in filtered_df.columns:
+            filtered_df[col] = df[col]
+    filtered_df = filtered_df[df.columns]
     filtered_df = filtered_df.reset_index(drop=True)
     return filtered_df
 
@@ -1975,16 +1976,16 @@ if not st.session_state.sidebar_collapsed:
 def save_search(user_id, search_name, filters):
 
     # Save current filter configuration as a named search for future use.
-   
+    
     # Serializes the current filter state to JSON and stores it in the database
     # along with the user ID and search name. This allows users to save and
     # reload complex filter combinations.
-   
+    
     # Args:
     #     user_id: Identifier for the current user
     #     search_name: User-provided name for this search
     #     filters: Current filter configuration dictionary
-       
+        
     # Note: Validates filter structure before saving to ensure data integrity
 
     try:
@@ -2061,13 +2062,13 @@ def save_search(user_id, search_name, filters):
 def load_saved_searches(user_id):
 
     # Retrieve all saved searches for a specific user.
-   
+    
     # Queries the database for saved search names associated with the user ID.
     # Used to populate the saved search dropdown in the UI.
-   
+    
     # Args:
     #     user_id: Identifier for the current user
-       
+        
     # Returns:
     #     list: List of dictionaries containing search names, or empty list if none found
 
@@ -2085,14 +2086,14 @@ def load_saved_searches(user_id):
 def load_search(user_id, search_name):
 
     # Load a specific saved search and restore its filter configuration.
-   
+    
     # Retrieves the filter configuration from the database and deserializes it
     # from JSON. Updates the session state to apply the loaded filters.
-   
+    
     # Args:
     #     user_id: Identifier for the current user
     #     search_name: Name of the saved search to load
-       
+        
     # Side Effects:
     #     Updates st.session_state.filters with the loaded configuration
     #     Triggers page rerun to apply the loaded filters
@@ -2158,15 +2159,15 @@ def load_search(user_id, search_name):
 def create_cache_key(column, dependent_filters):
 
     # Generate a unique cache key for filter combinations.
-   
+    
     # Creates a hash-based key that represents the current state of filters
     # for a specific column. This enables efficient caching of dropdown options
     # that depend on other filter values (e.g., cities filtered by selected state).
-   
+    
     # Args:
     #     column: The column name to generate a cache key for
     #     dependent_filters: Dictionary of current filter values that affect this column
-       
+        
     # Returns:
     #     str: MD5 hash representing the unique filter combination
 
@@ -2193,20 +2194,20 @@ def create_cache_key(column, dependent_filters):
 def fetch_unique_values(column, dependent_filters, cache_key, _trigger):
 
     # Fetch unique values for dropdown filters with dependency filtering.
-   
+    
     # Retrieves distinct values for a specific column, optionally filtered by
     # other active filters. For example, when a state is selected, this function
     # returns only cities within that state. Uses caching for performance.
-   
+    
     # Args:
     #     column: Column name to fetch unique values for
     #     dependent_filters: Other active filters that should constrain the results
     #     cache_key: Unique identifier for caching (from create_cache_key)
     #     _trigger: Cache invalidation trigger (incremented to force refresh)
-       
+        
     # Returns:
     #     list: Sorted list of unique values for the column
-       
+        
     # Note: Uses FILTER_TABLE_NAME for optimized performance on large datasets
 
     try:
@@ -2273,21 +2274,21 @@ def fetch_unique_values(column, dependent_filters, cache_key, _trigger):
 def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=False):
 
     # Fetch paginated business data based on applied filters.
-   
+    
     # Core data retrieval function that builds and executes SQL queries based on
     # the current filter configuration. Supports pagination and returns both the
     # data and total record count for pagination controls.
-   
+    
     # Args:
     #     filters: Dictionary of active filter values
     #     _cache_key: Cache invalidation key (unused but required for caching)
     #     page_size: Number of records per page
     #     current_page: Current page number (1-based)
     #     fetch_all: If True, fetch all records regardless of pagination
-       
+        
     # Returns:
     #     tuple: (DataFrame of filtered data, total record count)
-       
+        
     # Note: Builds dynamic SQL with parameterized queries for security
 
     try:
@@ -2336,7 +2337,7 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
             elif column == "show_all_customers" and value:
                 # Special filter for showing only customers with valid ACCOUNT_ID
                 where_clauses.append("ACCOUNT_ID IS NOT NULL AND TRIM(ACCOUNT_ID) != '' AND UPPER(TRIM(ACCOUNT_ID)) != 'NAN'")
-       
+        
         if where_clauses:
             condition = " WHERE " + " AND ".join(where_clauses)
             count_query += condition
@@ -2373,14 +2374,14 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
 def display_filter_summary(filters):
 
     # Display a visual summary of currently active filters.
-   
+    
     # Creates a user-friendly display showing which filters are currently applied
     # and their values. Helps users understand their current search criteria and
     # provides quick access to clear filters.
-   
+    
     # Args:
     #     filters: Dictionary of current filter values
-       
+        
     # Side Effects:
     #     Renders Streamlit components showing active filters
     #     Displays "no filters" message when no filters are active
@@ -2407,7 +2408,7 @@ def display_filter_summary(filters):
                 active_filters.append(f"{label}: Contains {', '.join(f'{term!r}' for term in terms)}")
         elif column == "show_all_customers" and value:
             active_filters.append("Customer Filter: Existing Customers Only")
-   
+    
     # Hide no-filters message if filtered_df is non-empty (analyst or filters)
     filtered_df = st.session_state.get('filtered_df', None)
     has_results = filtered_df is not None and not filtered_df.empty
@@ -2425,7 +2426,7 @@ def display_filter_summary(filters):
                             parts = filter_str.split(":", 1)  # Split on first colon only
                             filter_label = parts[0].strip()
                             filter_value = parts[1].strip()
-                           
+                            
                             # Clean up zip code display - remove "Contains ''" wrapper
                             if filter_label.lower() == "zip code" and "contains" in filter_value.lower():
                                 # Extract just the zip code from "Contains '12345'" format
@@ -2433,13 +2434,13 @@ def display_filter_summary(filters):
                                 zip_match = re.search(r"'([^']+)'", filter_value)
                                 if zip_match:
                                     filter_value = zip_match.group(1)
-                           
+                            
                             # Make the value part bold while keeping label normal
                             styled_filter = f"{filter_label}: <strong>{filter_value}</strong>"
                         else:
                             # If no colon, just display as is
                             styled_filter = filter_str
-                       
+                        
                         st.markdown(f"""
                         <div style="
                             background: linear-gradient(135deg, #f8f8f8 0%, #ffffff 100%);
@@ -2473,19 +2474,19 @@ def display_filter_summary(filters):
                 margin: 0.5rem 0;
                 transition: all 0.3s ease;
             }
-           
+            
             .no-filters-container:hover {
                 border-color: var(--gp-primary);
                 transform: translateY(-1px);
                 box-shadow: 0 4px 12px rgba(38, 42, 255, 0.08);
             }
-           
+            
             .no-filters-icon {
                 font-size: 2rem;
                 margin-bottom: 0.5rem;
                 opacity: 0.6;
             }
-           
+            
             .no-filters-text {
                 font-family: var(--font-family-primary);
                 font-size: 0.95rem;
@@ -2493,7 +2494,7 @@ def display_filter_summary(filters):
                 font-weight: 500;
                 margin: 0;
             }
-           
+            
             .no-filters-subtext {
                 font-family: var(--font-family-primary);
                 font-size: 0.8rem;
@@ -2502,7 +2503,7 @@ def display_filter_summary(filters):
                 margin-top: 0.25rem;
             }
             </style>
-           
+            
             <div class="no-filters-container">
                 <p class="no-filters-text">No search filters currently applied</p>
                 <p class="no-filters-subtext">Use the sidebar to narrow down your business prospects</p>
@@ -2512,16 +2513,16 @@ def display_filter_summary(filters):
 # Sidebar filter creation
 def create_sidebar_filters():
     # Generate the complete sidebar filter interface with expandable sections.
-   
+    
     # This is the main UI generation function that creates all filter controls
-    # in the sidebar using expandable sections. It handles different filter types
+    # in the sidebar using expandable sections. It handles different filter types 
     # (text, dropdown, range, checkbox) and manages their interdependencies.
-   
+    
     # Returns:
     #     tuple: (current_filters_dict, apply_filters_boolean)
     #         - current_filters_dict: Current values of all filters
     #         - apply_filters_boolean: True if user clicked "Apply Filters" button
-           
+            
     # Side Effects:
     #     Renders the sidebar interface including:
     #     - Expandable filter sections (Location, Business, Metrics)
@@ -2536,7 +2537,7 @@ def create_sidebar_filters():
         default_placeholder = f"Search {config['label'].lower()}"
         if placeholder is None:
             placeholder = "Enter ZIP code (e.g., 12345)" if column == "ZIP" else default_placeholder
-       
+        
         search_value = st.text_input(
             label,
             value=st.session_state.filters.get(column, ""),
@@ -2545,7 +2546,7 @@ def create_sidebar_filters():
             help=f"Enter terms to search for in {config['label'].lower()} (case-insensitive).",
             label_visibility="visible"
         )
-       
+        
         if search_value != st.session_state.filters[column]:
             st.session_state.filters[column] = search_value.strip()
             st.session_state.last_update_time = time.time()
@@ -2553,9 +2554,9 @@ def create_sidebar_filters():
             update_filter_triggers(get_filters_by_type("dropdown"))
             if time.time() - st.session_state.last_update_time < 0.3:
                 st.rerun()
-       
+        
         return search_value.strip()
-   
+    
     def generate_dropdown_filter(column, config):
         """Generate a dropdown multiselect filter"""
         dependent_filters = {
@@ -2563,7 +2564,7 @@ def create_sidebar_filters():
             for k in filter_columns
             if k != column and k not in ["B2B", "B2C"] and is_filter_active(k, st.session_state.filters[k])
         }
-       
+        
         cache_key = create_cache_key(column, dependent_filters)
         values = with_loading_spinner(
             f"Loading {config['label'].lower()} options...",
@@ -2574,18 +2575,18 @@ def create_sidebar_filters():
                 st.session_state.filter_update_trigger[column]
             )
         )
-       
+        
         valid_values = [
             v for v in values
             if isinstance(v, (str, int, float))
             and str(v).strip()
             and str(v).lower() not in ['d', 'i', 'ii', 'u', 'none', 'null', '[', ']', '', 'invalid']
         ]
-       
+        
         current_value = st.session_state.filters.get(column, [])
         if not valid_values:
             st.warning(f"No {config['label'].lower()} options available. Try adjusting other filters.")
-       
+        
         selected = st.multiselect(
             config["label"],
             options=sorted(set(valid_values + current_value)),
@@ -2595,7 +2596,7 @@ def create_sidebar_filters():
             disabled=not valid_values,
             help=f"Select one or more {config['label'].lower()} to filter results."
         )
-       
+        
         if selected != st.session_state.filters[column]:
             st.session_state.filters[column] = selected
             st.session_state.last_update_time = time.time()
@@ -2603,13 +2604,13 @@ def create_sidebar_filters():
             update_filter_triggers(get_filters_by_type("dropdown"), exclude_column=column)
             if time.time() - st.session_state.last_update_time < 0.3:
                 st.rerun()
-       
+        
         return selected
 
     filters = {}
     filter_columns = list(STATIC_FILTERS.keys())
     dropdown_columns = [k for k, v in STATIC_FILTERS.items() if v["type"] == "dropdown"]
-   
+    
     if not st.session_state.sidebar_collapsed:
         with st.sidebar:
             # Enhanced CSS for the expandable sections design
@@ -2625,46 +2626,46 @@ def create_sidebar_filters():
                     font-weight: 500 !important;
                     transition: all 0.2s ease !important;
                 }
-               
+                
                 /* Primary button styling */
                 .stButton > button[kind="primary"] {
                     background-color: #262aff !important;
                     color: white !important;
                     border: none !important;
                 }
-               
+                
                 /* Secondary button styling */
                 .stButton > button[kind="secondary"] {
                     background-color: #ffffff !important;
                     color: #1a1b23 !important;
                     border: 2px solid #e6e9f3 !important;
                 }
-               
+                
                 /* Hover effects */
                 .stButton > button[kind="primary"]:hover {
                     background-color: #1b1c6e !important;
                     transform: translateY(-1px) !important;
                 }
-               
+                
                 .stButton > button[kind="secondary"]:hover {
                     background-color: #f0f2f7 !important;
                     border-color: #2e3748 !important;
                 }
-               
+                
                 /* Disabled state */
                 .stButton > button:disabled {
                     opacity: 0.5 !important;
                     cursor: not-allowed !important;
                     transform: none !important;
                 }
-               
+                
                 /* Input field styling */
                 div[data-testid="stSidebar"] .stTextInput > div > input,
                 div[data-testid="stSidebar"] .stNumberInput > div > input {
                     border-radius: 6px !important;
                     font-size: 0.85rem !important;
                 }
-               
+                
                 /* Expander styling */
                 .streamlit-expanderHeader {
                     background-color: var(--gp-haze) !important;
@@ -2673,26 +2674,26 @@ def create_sidebar_filters():
                     padding: 8px 12px !important;
                     margin-bottom: 0.5rem !important;
                 }
-               
+                
                 /* Add spacing between expanders */
                 .streamlit-expander {
                     margin-bottom: 1rem !important;
                 }
                 </style>
             """, unsafe_allow_html=True)
-           
+            
             # Location Filters Expander
             with st.expander("Location", expanded=True):
                 # Text filters for location
                 for column in ["ZIP"]:
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "text":
                         filters[column] = generate_text_filter(column, STATIC_FILTERS[column])
-               
+                
                 # Dropdown filters for location
                 for column in ["STATE", "CITY"]:
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "dropdown":
                         filters[column] = generate_dropdown_filter(column, STATIC_FILTERS[column])
-           
+            
             # Business Filters Expander
             with st.expander("Business Details", expanded=False):
                 # Business name text filter
@@ -2700,12 +2701,12 @@ def create_sidebar_filters():
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "text":
                         placeholder = f"Search {STATIC_FILTERS[column]['label'].lower()} (e.g., Taco Bell)"
                         filters[column] = generate_text_filter(column, STATIC_FILTERS[column], placeholder)
-               
+                
                 # Business dropdown filters
                 for column in ["PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE"]:
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "dropdown":
                         filters[column] = generate_dropdown_filter(column, STATIC_FILTERS[column])
-               
+                
                 # Business Type Filters (B2B/B2C) as selectboxes
                 for column in ["B2B", "B2C"]:
                     config = STATIC_FILTERS[column]
@@ -2724,16 +2725,16 @@ def create_sidebar_filters():
                         st.session_state.filters[column] = selected
                         st.session_state.last_update_time = time.time()
                         reset_to_first_page()
-               
+                
                 # Current customers section
                 st.markdown("**Customer Status**")
                 show_all_customers = st.checkbox(
-                    "Show only Current Customers",
+                    "Show only Current Customers", 
                     help="Check to show only existing customers (with Account IDs)"
                 )
                 if show_all_customers:
                     filters["show_all_customers"] = True
-           
+            
             # Metrics Filters Expander
             with st.expander("Metrics", expanded=False):
                 # Range filters
@@ -2774,7 +2775,7 @@ def create_sidebar_filters():
                             if time.time() - st.session_state.last_update_time < 0.3:
                                 st.rerun()
                         filters[column] = new_value
-           
+            
             # Check for filters and errors
             has_filters = has_active_filters(filters)
             has_errors = False
@@ -2784,9 +2785,9 @@ def create_sidebar_filters():
                     if min_val is not None and max_val is not None and min_val > max_val:
                         has_errors = True
                         break
-           
+            
             # Action buttons - using full width layout instead of columns
-           
+            
             # Reset button
             if st.button("Reset All", key="reset_filters", use_container_width=True, type="secondary"):
                 st.session_state.filters = {
@@ -2843,7 +2844,7 @@ def create_sidebar_filters():
                     filters,
                     display_columns
                 )
-           
+            
             # Saved searches section
             with st.expander("Saved Searches"):
                 # Use current Snowflake user as default for User ID
@@ -2864,7 +2865,7 @@ def create_sidebar_filters():
                         st.rerun()
                     else:
                         st.warning("Please provide a search name and apply at least one filter.")
-               
+                
                 saved_searches = load_saved_searches(user_id)
                 load_search_key = f"load_search_{get_load_search_counter()}_{st.session_state.reset_counter}"
                 st.session_state.selected_search = st.selectbox(
@@ -2874,19 +2875,19 @@ def create_sidebar_filters():
                     placeholder="Select a saved search",
                     key=load_search_key
                 )
-               
+                
                 # Load Search button (full width)
                 if st.button("Load Search", key="load_search_button", use_container_width=True, type="primary", disabled=not st.session_state.selected_search):
                     if st.session_state.selected_search:
                         load_search(user_id, st.session_state.selected_search)
-               
+                
                 # Delete Search button (full width)
                 if st.button("Delete Search", key="delete_search", use_container_width=True, type="secondary", disabled=not st.session_state.selected_search):
                     st.session_state.confirm_delete_search = True
                     st.session_state.search_to_delete = st.session_state.selected_search
                     time.sleep(0.1)
                     st.rerun()
-               
+                
                 if st.session_state.confirm_delete_search and st.session_state.search_to_delete:
                     st.warning(f"Are you sure you want to delete '{st.session_state.search_to_delete}'?")
                     col_confirm, col_cancel = create_two_column_layout([1, 1])
@@ -2921,7 +2922,7 @@ def create_sidebar_filters():
                             st.session_state.search_name = ""
                             st.session_state.selected_search = ""
                             st.rerun()
-   
+    
     return filters, apply_filters
 
 # =============================================================================
@@ -2932,17 +2933,17 @@ def create_sidebar_filters():
 def format_url(value):
 
     # Standardize URL format for consistent display and linking.
-   
+    
     # Ensures URLs have proper protocol prefixes and removes common formatting
     # issues. Handles edge cases like missing protocols, leading slashes, and
     # null/empty values.
-   
+    
     # Args:
     #     value: Raw URL value from database (may be None, empty, or malformed)
-       
+        
     # Returns:
     #     str or None: Properly formatted URL with https:// prefix, or None if invalid
-       
+        
     # Examples:
     #     format_url("google.com") -> "https://google.com"
     #     format_url("/path/to/page") -> "https://path/to/page"
@@ -2950,34 +2951,34 @@ def format_url(value):
 
     if pd.isna(value) or not value or str(value).strip() in ['-', '', 'nan', 'None']:
         return None
-   
+    
     url = str(value).strip()
-   
+    
     # Remove leading slash if present
     if url.startswith('/'):
         url = url[1:]
-   
+    
     # Add https:// if no protocol is present
     if not url.startswith(('http://', 'https://')):
         url = f"https://{url}"
-   
+    
     return url
 
 # Phone number formatting
 def format_phone_for_display(value):
 
     # Format phone numbers for consistent display.
-   
+    
     # Standardizes phone number display format using US conventions.
     # Strips non-numeric characters and applies (XXX) XXX-XXXX formatting
     # for 10-digit numbers, with special handling for 11-digit numbers starting with 1.
-   
+    
     # Args:
     #     value: Raw phone number from database (may include formatting, extensions, etc.)
-       
+        
     # Returns:
     #     str or None: Formatted phone number for display, or None if invalid
-       
+        
     # Examples:
     #     format_phone_for_display("1234567890") -> "(123) 456-7890"
     #     format_phone_for_display("11234567890") -> "(123) 456-7890"
@@ -2985,7 +2986,7 @@ def format_phone_for_display(value):
 
     if pd.isna(value) or not value or str(value).strip() in ['-', '', 'nan', 'None']:
         return None
-   
+    
     phone = re.sub(r'\D', '', str(value).strip())
     if len(phone) == PHONE_LENGTH_STANDARD:
         return f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
@@ -2997,16 +2998,16 @@ def format_phone_for_display(value):
 def format_phone_for_link(value):
 
     # Format phone numbers for tel: protocol links.
-   
+    
     # Creates clickable phone links using the tel: protocol for
     # VoIP applications. Ensures proper international formatting with country codes.
-   
+    
     # Args:
     #     value: Raw phone number from database
-       
+        
     # Returns:
     #     str or None: tel: protocol URL for clickable phone links, or None if invalid
-       
+        
     # Examples:
     #     format_phone_for_link("1234567890") -> "tel:+11234567890"
     #     format_phone_for_link("11234567890") -> "tel:+11234567890"
@@ -3014,7 +3015,7 @@ def format_phone_for_link(value):
 
     if pd.isna(value) or not value or str(value).strip() in ['-', '', 'nan', 'None']:
         return None
-   
+    
     phone = re.sub(r'\D', '', str(value).strip())
     if len(phone) == PHONE_LENGTH_STANDARD:
         formatted_display = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
@@ -3029,27 +3030,27 @@ def format_phone_for_link(value):
 def format_address_for_link(address_parts):
     """
     Format address components into a URL for map applications.
-   
+    
     Creates a cross-platform map URL that works with various map applications.
     Uses the maps:// scheme which is compatible with most desktop map applications.
-   
+    
     Args:
         address_parts: List of address components (street, city, state, zip)
-       
+        
     Returns:
         str or None: Maps URL for the address, or None if invalid
-       
+        
     Examples:
         format_address_for_link(["123 Main St", "Springfield", "IL", "62701"])
         -> "maps:q=123+Main+St,+Springfield,+IL,+62701"
     """
     if not address_parts:
         return None
-   
+    
     # Join address parts with commas and encode for URL
     address_str = ', '.join(address_parts)
     encoded_address = urllib.parse.quote_plus(address_str)
-   
+    
     # Create map app URL (works with Apple Maps, Google Maps, and other map apps)
     return f"maps:q={encoded_address}"
 
@@ -3151,45 +3152,45 @@ def is_dark_map_style(map_style=None):
 def build_tooltip_sections(business_data):
     """Build standardized business data sections for tooltips"""
     sections = []
-   
+    
     # Location Details Section
     location_items = []
-   
+    
     # Build address using consolidated helper
     address_parts = extract_address_parts(business_data)
     if address_parts:
         address_str = ', '.join(address_parts)
         location_items.append(f'📍 {address_str}')
-   
+    
     if is_valid_value(business_data.get("PHONE")):
         formatted_phone = format_phone_for_display(business_data["PHONE"])
         if formatted_phone:
             location_items.append(f'📞 {formatted_phone}')
-   
+    
     if is_valid_value(business_data.get("URL")):
         formatted_url = format_url(business_data["URL"])
         if formatted_url:
             location_items.append(f'🌐 {formatted_url}')
-   
+    
     if location_items:
         sections.append(('Location Details', location_items))
-   
+    
     # Contact Information Section
     contact_items = []
     if is_valid_value(business_data.get("CONTACT_NAME")):
         contact_items.append(f'👤 {business_data["CONTACT_NAME"]}')
-   
+    
     if is_valid_value(business_data.get("CONTACT_PHONE")):
         formatted_phone = format_phone_for_display(business_data["CONTACT_PHONE"])
         if formatted_phone:
             contact_items.append(f'📞 {formatted_phone}')
-   
+    
     if is_valid_value(business_data.get("CONTACT_EMAIL")):
         contact_items.append(f'📧 {business_data["CONTACT_EMAIL"]}')
-   
+    
     if contact_items:
         sections.append(('Contact Information', contact_items))
-   
+    
     # Business Metrics Section
     metrics_items = []
     if is_valid_value(business_data.get("REVENUE")):
@@ -3198,39 +3199,39 @@ def build_tooltip_sections(business_data):
             metrics_items.append(f'💵 Revenue: ${revenue_value:,.0f}')
         except (ValueError, TypeError):
             pass
-   
+    
     if is_valid_value(business_data.get("NUMBER_OF_EMPLOYEES")):
         metrics_items.append(f'👥 Employees: {business_data["NUMBER_OF_EMPLOYEES"]}')
-   
+    
     if is_valid_value(business_data.get("NUMBER_OF_LOCATIONS")):
         metrics_items.append(f'🏢 Locations: {business_data["NUMBER_OF_LOCATIONS"]}')
-   
+    
     # Add additional business data if available
     if is_valid_value(business_data.get("PRIMARY_INDUSTRY")):
         metrics_items.append(f'🏭 Industry: {business_data["PRIMARY_INDUSTRY"]}')
-   
+    
     if is_valid_value(business_data.get("SIC_CODE")):
         metrics_items.append(f'📊 SIC Code: {business_data["SIC_CODE"]}')
-   
+    
     if metrics_items:
         sections.append(('Business Metrics', metrics_items))
-   
+    
     return sections
 
 def build_business_card_sections(business_data):
     """Build standardized business data sections for HTML business cards"""
-   
+    
     # Helper function to create metric HTML
     def create_metric(icon, label, value, link=None):
         metric_value = f'<a href="{link}" target="_blank">{value}</a>' if link else value
         return f'<div class="data-metric"><div class="metric-accent"></div><div class="metric-icon">{icon}</div><div class="metric-label">{label}</div><div class="metric-value">{metric_value}</div></div>'
-   
+    
     # Helper function to create section
     def create_section(title, metrics):
         if not metrics:
             return ""
         return f'<div class="data-viz-section"><div class="section-header">{title}</div><div class="data-viz-grid">{"".join(metrics)}</div></div>'
-   
+    
     # Location metrics
     location_metrics = []
     address_parts = extract_address_parts(business_data)
@@ -3238,18 +3239,18 @@ def build_business_card_sections(business_data):
         address_str = ', '.join(address_parts)
         address_link = format_address_for_link(address_parts)
         location_metrics.append(create_metric('📍', 'Address', address_str, address_link))
-   
+    
     if is_valid_value(business_data.get("PHONE")):
         formatted_phone = format_phone_for_display(business_data["PHONE"])
         phone_link = format_phone_for_link(business_data["PHONE"])
         if formatted_phone:
             location_metrics.append(create_metric('📞', 'Phone', formatted_phone, phone_link))
-   
+    
     if is_valid_value(business_data.get("URL")):
         formatted_url = format_url(business_data["URL"])
         if formatted_url:
             location_metrics.append(create_metric('🌐', 'Website', formatted_url, formatted_url))
-   
+    
     # Contact metrics
     contact_metrics = []
     contact_fields = [
@@ -3261,13 +3262,13 @@ def build_business_card_sections(business_data):
             value = business_data[field]
             link = f"mailto:{value}" if field == "CONTACT_EMAIL" else None
             contact_metrics.append(create_metric(icon, label, value, link))
-   
+    
     if is_valid_value(business_data.get("CONTACT_PHONE")):
         formatted_phone = format_phone_for_display(business_data["CONTACT_PHONE"])
         phone_link = format_phone_for_link(business_data["CONTACT_PHONE"])
         if formatted_phone:
             contact_metrics.append(create_metric('📞', 'Contact Phone', formatted_phone, phone_link))
-   
+    
     # Business metrics
     business_metrics = []
     if is_valid_value(business_data.get("REVENUE")):
@@ -3276,7 +3277,7 @@ def build_business_card_sections(business_data):
             business_metrics.append(create_metric('💵', 'Annual Revenue', f'${revenue_value:,.0f}'))
         except (ValueError, TypeError):
             pass
-   
+    
     metric_fields = [
         ("NUMBER_OF_EMPLOYEES", "👥", "Employees"),
         ("NUMBER_OF_LOCATIONS", "🏢", "Locations")
@@ -3284,14 +3285,14 @@ def build_business_card_sections(business_data):
     for field, icon, label in metric_fields:
         if is_valid_value(business_data.get(field)):
             business_metrics.append(create_metric(icon, label, business_data[field]))
-   
+    
     # Return HTML sections
     sections = [
         create_section("Location Details", location_metrics),
         create_section("Contact Information", contact_metrics),
         create_section("Business Metrics", business_metrics)
     ]
-   
+    
     return sections
 
 def create_data_editor_column_config():
@@ -3300,19 +3301,19 @@ def create_data_editor_column_config():
         # Checkbox columns
         "Map": st.column_config.CheckboxColumn("Map", help="Check to include on map", default=True, width="small"),
         "SF": st.column_config.CheckboxColumn("SF", help="Check to push to Salesforce", default=False, width="small"),
-       
+        
         # Text columns  
         "Current Customer": st.column_config.TextColumn("Current Customer", help="🔵 = Existing Customer, ⚪ = Prospect", width="small"),
         "FULL_ADDRESS": st.column_config.TextColumn("Full Address", help="Complete address"),
         "ACCOUNT_ID": st.column_config.TextColumn("Account ID", help="Salesforce Account ID"),
-       
+        
         # Link columns
         "URL": st.column_config.LinkColumn("Website", help="Click to visit website", display_text=BUTTON_LABEL_VISIT_SITE),
         "PHONE": st.column_config.LinkColumn("Phone", help="Click to call", display_text=BUTTON_LABEL_CALL),
         "CONTACT_PHONE": st.column_config.LinkColumn("Contact Phone", help="Click to call", display_text=BUTTON_LABEL_CALL),
         "CONTACT_EMAIL": st.column_config.LinkColumn("Contact Email", help="Click to send email", display_text=BUTTON_LABEL_EMAIL),
         "ADDRESS_LINK": st.column_config.LinkColumn("Directions", help="Click to open in Maps app", display_text=BUTTON_LABEL_GET_DIRECTIONS),
-       
+        
         # Number columns
         "REVENUE": st.column_config.NumberColumn("Revenue", help="Annual revenue in USD", format="$%.0f"),
         "NUMBER_OF_EMPLOYEES": st.column_config.NumberColumn("Employees", help="Number of employees", format="%.0f"),
@@ -3322,9 +3323,9 @@ def create_data_editor_column_config():
 def get_disabled_columns():
     """Get list of columns that should be disabled in data editor"""
     return [
-        "DBA_NAME", "FULL_ADDRESS", "PHONE", "URL", "ACCOUNT_ID", "Current Customer",
-        "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "PRIMARY_INDUSTRY",
-        "SUB_INDUSTRY", "SIC_CODE", "REVENUE", "NUMBER_OF_EMPLOYEES",
+        "DBA_NAME", "FULL_ADDRESS", "PHONE", "URL", "ACCOUNT_ID", "Current Customer", 
+        "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "PRIMARY_INDUSTRY", 
+        "SUB_INDUSTRY", "SIC_CODE", "REVENUE", "NUMBER_OF_EMPLOYEES", 
         "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C"
     ]
 
@@ -3351,7 +3352,7 @@ def calculate_pagination_values(total_records, page_size, current_page):
     validated_current_page = min(current_page, max(total_pages, 1))
     start_idx = (validated_current_page - 1) * page_size
     end_idx = min(start_idx + page_size, total_records)
-   
+    
     return {
         'total_pages': total_pages,
         'validated_current_page': validated_current_page,
@@ -3460,7 +3461,7 @@ def display_pagination_status(start_idx, end_idx, total_records, total_pages):
 def create_complete_pagination_ui(total_records, total_pages, start_idx, end_idx):
     """Create complete pagination UI with all components"""
     display_html_wrapper("div", "page-navigation-container")
-   
+    
     # Top row - Page size and page selector
     col_left, col_right = create_two_column_layout([3, 2])
     with col_left:
@@ -3471,13 +3472,13 @@ def create_complete_pagination_ui(total_records, total_pages, start_idx, end_idx
         with sub_col2:
             create_page_selector(total_pages)
         close_html_wrapper("div")
-   
+    
     # Right side - Previous and Next buttons grouped together  
     with col_right:
         display_html_wrapper("div", "pagination-nav-buttons")
         create_pagination_navigation_buttons(total_pages)
         close_html_wrapper("div")
-   
+    
     display_pagination_status(start_idx, end_idx, total_records, total_pages)
     close_html_wrapper("div")  # Close page-navigation-container
 
@@ -3548,7 +3549,7 @@ def create_tooltip_header_style(is_dark_map=False):
         """
 
 # =============================================================================
-# LAYOUT HELPER FUNCTIONS
+# LAYOUT HELPER FUNCTIONS 
 # =============================================================================
 
 def create_two_column_layout(ratio=[1, 1]):
@@ -3624,7 +3625,7 @@ def execute_sql_query(query, params=None, operation_name="query", return_single_
             result = session.sql(query, params=params)
         else:
             result = session.sql(query)
-       
+        
         df = result.to_pandas()
         if return_single_value:
             return df.iloc[0, 0]
@@ -3667,16 +3668,16 @@ def show_error_message(message, details=None, log_error=True):
         full_message = f"{message}\n{details}"
     else:
         full_message = message
-   
+    
     st.error(full_message)
-   
+    
     if log_error:
         logger.error(full_message)
 
 def show_success_message(message, log_success=True):
     """Display success message with optional logging"""
     st.success(message)
-   
+    
     if log_success:
         logger.info(message)
 
@@ -3695,7 +3696,7 @@ def is_filter_active(filter_key, filter_value):
     """Check if a single filter is active/non-empty"""
     if filter_key not in STATIC_FILTERS:
         return False
-   
+    
     filter_type = STATIC_FILTERS[filter_key]["type"]
     if filter_type == "dropdown":
         return bool(filter_value)
@@ -3755,13 +3756,13 @@ def apply_gradient_class(element_class, gradient_type="primary"):
     """Apply gradient class to elements via CSS injection"""
     gradient_classes = {
         "primary": "gp-gradient-primary",
-        "surface": "gp-gradient-surface",
+        "surface": "gp-gradient-surface", 
         "light": "gp-gradient-light",
         "dark": "gp-gradient-dark"
     }
-   
+    
     class_name = gradient_classes.get(gradient_type, "gp-gradient-primary")
-   
+    
     st.markdown(f"""
         <style>
         .{element_class} {{
@@ -3783,19 +3784,19 @@ def main():
         st.session_state.cortex_messages = []
 
     # Main application entry point and UI orchestration.
-   
+    
     # This function coordinates the entire application flow:
     # 1. Creates sidebar filters and captures user input
     # 2. Displays filter summary to show current search criteria
     # 3. Manages Salesforce integration state
     # 4. Renders three main tabs: List View, Map View, and Salesforce
     # 5. Handles data fetching, pagination, and user interactions
-   
+    
     # The function uses Streamlit's tab system to organize different views of the data:
     # - List View: Paginated table with business details and Salesforce integration
     # - Map View: Interactive map showing business locations with selection capabilities  
     # - Salesforce: Integration status and configuration interface
-   
+    
     # Side Effects:
     #     - Updates session state based on user interactions
     #     - Fetches data from Snowflake when filters are applied
@@ -3828,120 +3829,21 @@ def main():
             )
 
     display_filter_summary(st.session_state.active_filters)
-   
+    
     # Ensure sf_business_ids is initialized
     init_session_state_key("sf_business_ids", [])
-   
+    
     # Ensure sf_pushed_count is initialized
     init_session_state_key("sf_pushed_count", 0)
-   
+    
     # Ensure sf_last_update is initialized
     init_session_state_key("sf_last_update", datetime.now().isoformat())
-   
-    tab1, tab2, tab3, tab4 = st.tabs(["List View", "Map View", "Salesforce", "Cortex Analyst"])
+    
+    tab1, tab2, tab3 = st.tabs(["List View", "Map View", "Salesforce"])
     # --- Cortex Analyst Integration: Run model for sidebar prompt and store results for all views ---
     # (already handled above)
 
-    with tab4:
-        # Cortex Analyst Tab Implementation (UI only)
-        st.header("Cortex Analyst (Prospector)")
-        st.markdown("Type a question below to interact with the Cortex Analyst model.")
-        st.caption(f"Model: `{CORTEX_MODEL_PATH}`")
-        user_input = st.chat_input("Ask a question about your prospects...")
-        # If user types in tab, run model and update session state
-        if user_input:
-            run_cortex_analyst(
-                user_input,
-                session,
-                _snowflake,
-                CORTEX_MODEL_PATH,
-                API_ENDPOINT,
-                API_TIMEOUT,
-                rerun_on_success=False
-            )
-            st.rerun()
-        # Display conversation
-        cortex_messages = st.session_state.get("cortex_messages", [])
-        for idx, message in enumerate(cortex_messages):
-            role = message["role"]
-            content = message["content"]
-            with st.chat_message(role):
-                for item in content:
-                    if item["type"] == "text":
-                        st.markdown(item["text"])
-                    elif item["type"] == "sql":
-                        st.code(item["statement"], language="sql")
-                        try:
-                            df = session.sql(item["statement"]).to_pandas()
-                            if not df.empty:
-                                data_tab, chart_tab = st.tabs(["Data 📄", "Chart 📉"])
-                                with data_tab:
-                                    st.dataframe(df, use_container_width=True)
-                                with chart_tab:
-                                    if len(df.columns) >= 2:
-                                        x_col = st.selectbox("X axis", df.columns, key=f"cortex_x_{idx}")
-                                        y_col = st.selectbox("Y axis", [c for c in df.columns if c != x_col], key=f"cortex_y_{idx}")
-                                        chart_type = st.selectbox("Chart type", ["Line Chart 📈", "Bar Chart 📊"], key=f"cortex_chart_{idx}")
-                                        if chart_type == "Line Chart 📈":
-                                            st.line_chart(df.set_index(x_col)[y_col])
-                                        else:
-                                            st.bar_chart(df.set_index(x_col)[y_col])
-                                    else:
-                                        st.write("At least 2 columns are required for chart.")
-                            else:
-                                st.info("Query returned no data.")
-                        except Exception as e:
-                            st.error(f"Error executing SQL: {e}")
-                    elif item["type"] == "suggestions":
-                        for suggestion_index, suggestion in enumerate(item["suggestions"]):
-                            # Use a more unique key by combining idx, suggestion_index, and a hash of the suggestion text
-                            unique_key = f"cortex_suggestion_{idx}_{suggestion_index}_{id(message)}"
-                            if st.button(suggestion, key=unique_key):
-                                st.session_state.cortex_active_suggestion = suggestion
-        # Display warnings
-        for warning in st.session_state.get("cortex_warnings", []):
-            st.warning(warning["message"], icon="⚠️")
-
-        # Display conversation
-        for idx, message in enumerate(st.session_state.cortex_messages):
-            role = message["role"]
-            content = message["content"]
-            with st.chat_message(role):
-                for item in content:
-                    if item["type"] == "text":
-                        st.markdown(item["text"])
-                    elif item["type"] == "sql":
-                        st.code(item["statement"], language="sql")
-                        # Execute and show SQL results
-                        try:
-                            df = session.sql(item["statement"]).to_pandas()
-                            if not df.empty:
-                                data_tab, chart_tab = st.tabs(["Data 📄", "Chart 📉"])
-                                with data_tab:
-                                    st.dataframe(df, use_container_width=True)
-                                with chart_tab:
-                                    if len(df.columns) >= 2:
-                                        x_col = st.selectbox("X axis", df.columns, key=f"cortex_x_{idx}")
-                                        y_col = st.selectbox("Y axis", [c for c in df.columns if c != x_col], key=f"cortex_y_{idx}")
-                                        chart_type = st.selectbox("Chart type", ["Line Chart 📈", "Bar Chart 📊"], key=f"cortex_chart_{idx}")
-                                        if chart_type == "Line Chart 📈":
-                                            st.line_chart(df.set_index(x_col)[y_col])
-                                        else:
-                                            st.bar_chart(df.set_index(x_col)[y_col])
-                                    else:
-                                        st.write("At least 2 columns are required for chart.")
-                            else:
-                                st.info("Query returned no data.")
-                        except Exception as e:
-                            st.error(f"Error executing SQL: {e}")
-                    elif item["type"] == "suggestions":
-                        for suggestion_index, suggestion in enumerate(item["suggestions"]):
-                            unique_key = f"cortex_suggestion_{idx}_{suggestion_index}_{abs(hash(suggestion))}"
-                            if st.button(suggestion, key=unique_key):
-                                st.session_state.cortex_active_suggestion = suggestion
-        # Display warnings
-        for warning in st.session_state.cortex_warnings:
-            st.warning(warning["message"], icon="⚠️")
+    # Cortex Analyst Tab removed. Results will be shown only in the List View data editor.
     # Only fetch data and reset to page 1 when filters are explicitly applied via button
     # If sidebar prompt is present and Cortex Analyst returned SQL, use its results for List/Map View
     cortex_df = None
@@ -3953,8 +3855,17 @@ def main():
             if msg.get("role") == "analyst":
                 for item in msg.get("content", []):
                     if item.get("type") == "sql" and "statement" in item:
+                        # Intercept and rewrite SQL to always select all fields for simple queries
+                        original_sql = item["statement"]
+                        import re
+                        # Only rewrite if the query is a simple SELECT from a table (no subqueries, no calculated columns)
+                        simple_select_pattern = r"^\s*SELECT\s+([\w,\s]+)\s+FROM\s+([\w\.]+)"  # e.g. SELECT col1, col2 FROM table
+                        if re.match(simple_select_pattern, original_sql, flags=re.IGNORECASE):
+                            rewritten_sql = re.sub(r"SELECT\s+.+?\s+FROM", "SELECT * FROM", original_sql, flags=re.IGNORECASE|re.DOTALL)
+                        else:
+                            rewritten_sql = original_sql
                         try:
-                            cortex_df = session.sql(item["statement"]).to_pandas()
+                            cortex_df = session.sql(rewritten_sql).to_pandas()
                             cortex_total_records = len(cortex_df)
                         except Exception as e:
                             st.error(f"Error executing Cortex SQL for List/Map View: {e}")
@@ -4058,19 +3969,19 @@ def main():
             else:
                 # Size for default page size when we have full page
                 effective_rows = st.session_state.page_size
-           
+            
             # Calculate dataframe height with minimal buffer
             base_height = effective_rows * ROW_HEIGHT
             header_buffer = HEADER_BUFFER_HEIGHT  # Reduced buffer for header row and minimal padding
             total_height = base_height + header_buffer
-           
+            
             # Set tighter min and max heights to reduce empty space
             min_height = (MIN_DISPLAY_ROWS * ROW_HEIGHT) + header_buffer  # Minimum for 2 rows
             max_height = MAX_DATAFRAME_HEIGHT  # Reduced maximum height
             dataframe_height = max(min_height, min(total_height, max_height))
             # Drop unnecessary columns but keep address fields for now
             display_df = show_df.iloc[start_idx:end_idx].drop(columns=['LONGITUDE', 'LATITUDE'], errors='ignore')
-           
+            
             # Update column order to use FULL_ADDRESS and exclude individual address fields
             column_order = [
                 "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
@@ -4078,14 +3989,14 @@ def main():
                 "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE", "REVENUE",
                 "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C"
             ]
-           
+            
             # Initialize Map and SF columns with their default states
             page_key = f"page_{st.session_state.current_page}_size_{st.session_state.page_size}"
-           
+            
             # Simple approach - set defaults and let data editor handle its own state
             display_df['Map'] = True  # Default value for Map column
             display_df['SF'] = False  # Default value for SF column
-           
+            
             # Create Current Customer column based on ACCOUNT_ID field
             if 'ACCOUNT_ID' in display_df.columns:
                 # Create visual indicators: blue circle for customers, empty circle for prospects
@@ -4095,74 +4006,74 @@ def main():
             else:
                 # If ACCOUNT_ID doesn't exist, assume all are prospects (empty circle)
                 display_df['Current Customer'] = "⚪"
-           
+            
             # We'll set the final column order after adding all our custom columns
-           
+            
             # Format URLs to ensure they are absolute URLs
             if 'URL' in display_df.columns:
                 display_df['URL'] = display_df['URL'].apply(format_url)
-           
+            
             # Create a combined address column for Google Maps links
             address_cols = ['ADDRESS', 'CITY', 'STATE', 'ZIP']
             if all(col in display_df.columns for col in address_cols):
                 # Create combined address parts list and add Address Link column
                 display_df['ADDRESS_LINK'] = display_df.apply(create_address_link, axis=1)
-               
+                
                 # Add the FULL_ADDRESS column
                 display_df['FULL_ADDRESS'] = display_df.apply(create_full_address, axis=1)
-               
+                
                 # Reorder columns to put ADDRESS_LINK right after DBA_NAME and before FULL_ADDRESS
                 if 'DBA_NAME' in display_df.columns:
                     # Get all columns
                     cols = display_df.columns.tolist()
-                   
+                    
                     # Start with specified columns in order
                     ordered_cols = []
                     for col in ["Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS", "PHONE"]:
                         if col in cols:
                             ordered_cols.append(col)
                             cols.remove(col)
-                   
+                    
                     # Add URL directly (not after ACCOUNT_ID anymore)
                     if "URL" in cols:
                         ordered_cols.append("URL")
                         cols.remove("URL")
-                   
+                    
                     # Remove ACCOUNT_ID from the columns list to add it at the end
                     if "ACCOUNT_ID" in cols:
                         cols.remove("ACCOUNT_ID")
-                   
+                    
                     # Remove individual address columns
                     for addr_col in ['ADDRESS', 'CITY', 'STATE', 'ZIP']:
                         if addr_col in cols:
                             cols.remove(addr_col)
-                   
+                    
                     # Add remaining columns
                     ordered_cols.extend(cols)
-                   
+                    
                     # Add ACCOUNT_ID at the very end
                     if "ACCOUNT_ID" in display_df.columns:
                         ordered_cols.append("ACCOUNT_ID")
-                   
+                    
                     # Apply the new order
                     display_df = display_df[ordered_cols]
-           
+            
             # Format phone numbers for clickable tel: links  
             if 'PHONE' in display_df.columns:
                 display_df['PHONE'] = display_df['PHONE'].apply(format_phone_for_link)
             if 'CONTACT_PHONE' in display_df.columns:
                 display_df['CONTACT_PHONE'] = display_df['CONTACT_PHONE'].apply(format_phone_for_link)
-           
+            
             # Format email addresses for clickable mailto: links
             if 'CONTACT_EMAIL' in display_df.columns:
                 display_df['CONTACT_EMAIL'] = display_df['CONTACT_EMAIL'].apply(format_email_for_link)
-           
+            
             styled_df = display_df.style.format(get_dataframe_format_config())
             # Global Payments Bento-style data visualization styling
             def apply_gp_branding(row):
                 """Apply Global Payments bento-style soft UI design with rounded corners and brand colors"""
                 styles = []
-               
+                
                 # Base styling with soft shapes and rounded corners (GP brand principle)
                 base_style = (
                     'background: linear-gradient(135deg, #ffffff 0%, #f8f9ff 100%); '
@@ -4174,7 +4085,7 @@ def main():
                     'font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif; '
                     'transition: all 0.2s ease;'
                 )
-               
+                
                 # Alternating bento grid pattern with soft backgrounds
                 if row.name % 2 == 0:
                     # Even rows - lighter Global Blue tint
@@ -4182,7 +4093,7 @@ def main():
                 else:
                     # Odd rows - pure white with subtle shadow
                     bg_gradient = 'background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%);'
-               
+                
                 # Apply to all columns
                 for col in row.index:
                     if col == 'DBA_NAME':
@@ -4223,12 +4134,12 @@ def main():
                             f'border-radius: 8px; '
                             f'padding: 8px 12px;'
                         )
-               
+                
                 return styles
-           
+            
             # Apply the Global Payments bento-style design
             styled_df = styled_df.apply(apply_gp_branding, axis=1)
-           
+            
             # Add Global Payments data visualization CSS styling
             st.markdown("""
                 <style>
@@ -4236,14 +4147,14 @@ def main():
                 .stDataEditor, .stDataFrame {
                     font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif !important;
                 }
-               
+                
                 .stDataEditor > div, .stDataFrame > div {
                     border-radius: 12px !important;
                     overflow: hidden !important;
                     box-shadow: 0 4px 20px rgba(38, 42, 255, 0.08) !important;
                     border: 1px solid #e6e9f3 !important;
                 }
-               
+                
                 /* Header styling with Global Blue gradient */
                 .stDataEditor thead th, .stDataFrame thead th {
                     background: linear-gradient(135deg, #262aff 0%, #4da8da 100%) !important;
@@ -4255,21 +4166,21 @@ def main():
                     text-transform: uppercase !important;
                     letter-spacing: 0.5px !important;
                 }
-               
+                
                 /* Row and cell styling */
                 .stDataEditor tbody tr:hover, .stDataFrame tbody tr:hover {
                     transform: translateY(-1px) !important;
                     box-shadow: 0 6px 24px rgba(38, 42, 255, 0.15) !important;
                     transition: all 0.2s ease !important;
                 }
-               
+                
                 .stDataEditor td, .stDataFrame td {
                     border: none !important;
                     padding: 2px !important;
                 }
-               
+                
                 /* Accent lines for visual grouping */
-                .stDataEditor tbody tr:nth-child(5n+1) td:first-child::before,
+                .stDataEditor tbody tr:nth-child(5n+1) td:first-child::before, 
                 .stDataFrame tbody tr:nth-child(5n+1) td:first-child::before {
                     content: '';
                     position: absolute;
@@ -4280,59 +4191,59 @@ def main():
                     background: linear-gradient(45deg, #262aff 0%, #4da8da 100%);
                     border-radius: 0 2px 2px 0;
                 }
-               
+                
                 /* Scrollbar styling */
                 .stDataEditor ::-webkit-scrollbar, .stDataFrame ::-webkit-scrollbar {
                     width: 8px;
                     height: 8px;
                 }
-               
+                
                 .stDataEditor ::-webkit-scrollbar-track, .stDataFrame ::-webkit-scrollbar-track {
                     background: #f1f5f9;
                     border-radius: 4px;
                 }
-               
+                
                 .stDataEditor ::-webkit-scrollbar-thumb, .stDataFrame ::-webkit-scrollbar-thumb {
                     background: linear-gradient(135deg, #262aff 0%, #4da8da 100%);
                     border-radius: 4px;
                 }
-               
+                
                 .stDataEditor ::-webkit-scrollbar-thumb:hover, .stDataFrame ::-webkit-scrollbar-thumb:hover {
                     background: linear-gradient(135deg, #1b1c6e 0%, #2d5a87 100%);
                 }
-               
+                
                 /* Link styling - consolidated for all link types */
                 .stDataEditor a, .stDataFrame a {
                     color: #262aff !important;
                     text-decoration: none !important;
                     font-weight: 500 !important;
                 }
-               
+                
                 .stDataEditor a:hover, .stDataFrame a:hover {
                     color: #1b1c6e !important;
                     text-decoration: underline !important;
                 }
-               
+                
                 /* Link icons */
                 .stDataEditor a[href^="tel:"]::before, .stDataFrame a[href^="tel:"]::before {
                     content: "📞 ";
                     font-size: 0.9em;
                     margin-right: 4px;
                 }
-               
+                
                 .stDataEditor a[href^="mailto:"]::before, .stDataFrame a[href^="mailto:"]::before {
                     content: "📧 ";
                     font-size: 0.9em;
                     margin-right: 4px;
                 }
-               
+                
                 /* Success message styling - minimal and compact */
                 .element-container:has(.stSuccess) {
                     margin: -20px 0 !important;
                     height: auto !important;
                     min-height: 0 !important;
                 }
-               
+                
                 .stSuccess {
                     padding: 0 !important;
                     min-height: 0 !important;
@@ -4341,13 +4252,13 @@ def main():
                     border: none !important;
                     box-shadow: none !important;
                 }
-               
+                
                 .stSuccess > div {
                     padding: 0 !important;
                     min-height: 0 !important;
                     height: auto !important;
                 }
-               
+                
                 .stSuccess p {
                     font-size: 8px !important;
                     padding: 0 !important;
@@ -4356,11 +4267,11 @@ def main():
                     color: #0c8a15 !important;
                     font-weight: 500 !important;
                 }
-               
+                
                 .stSuccess svg {
                     display: none !important;
                 }
-               
+                
                 .salesforce-section {
                     margin: 15px 0 20px 0;
                     border-top: 1px solid #f0f2f7;
@@ -4368,30 +4279,30 @@ def main():
                 }
                 </style>
             """, unsafe_allow_html=True)
-           
+            
             def load_data_editor():
                 # Configure columns for st.data_editor to make URLs and phone numbers clickable
                 column_config = create_data_editor_column_config()
-               
+                
                 # Create a unique key that includes a counter to force fresh instances
                 # This helps prevent state conflicts that cause the double-click issue
                 if 'data_editor_refresh_counter' not in st.session_state:
                     init_session_state_key('data_editor_refresh_counter', 0)
-               
+                
                 # Add a simple reset button to restore hidden columns
                 reset_col2, reset_col1 = create_reset_button_layout()
                 with reset_col1:
-                    if st.button("Reset Columns",
-                                key="reset_columns",
-                                type="secondary",
+                    if st.button("Reset Columns", 
+                                key="reset_columns", 
+                                type="secondary", 
                                 use_container_width=True,
                                 help="Restore any hidden columns"):
                         # Increment the refresh counter to force a re-render of the data editor
                         st.session_state.data_editor_refresh_counter += 1
                         st.rerun()
-               
+                
                 editor_key = f"business_selector_{page_key}_{st.session_state.data_editor_refresh_counter}"
-               
+                
                 # Display the data editor without any callbacks
                 # Let Streamlit handle the state naturally
                 edited_df = st.data_editor(
@@ -4403,27 +4314,27 @@ def main():
                     column_config=column_config,
                     key=editor_key
                 )
-               
+                
                 # Process the current selections without complex state management
                 if 'Map' in edited_df.columns and 'SF' in edited_df.columns:
                     # Process selected businesses for map
                     selected_for_map = edited_df[edited_df['Map'] == True].copy()
                     st.session_state.selected_map_businesses = selected_for_map
-                   
+                    
                     if len(selected_for_map) > 0:
                         st.caption(f"📍 {len(selected_for_map)} businesses selected for mapping")
                     else:
                         st.caption("📍 No businesses selected - map will be empty")
-                   
+                    
                     # Process selected businesses for Salesforce
                     selected_for_sf = edited_df[edited_df['SF'] == True].copy()
-                   
+                    
                     # Don't automatically add to Salesforce - just show what's selected
                     # The actual push will happen when the button is clicked
-                   
+                    
                     if len(selected_for_sf) > 0:
                         st.caption(f"🚀 {len(selected_for_sf)} businesses selected for Salesforce")
-                       
+                        
                         # Check if all selected businesses are already pushed
                         all_pushed = True
                         for _, business in selected_for_sf.iterrows():
@@ -4432,10 +4343,10 @@ def main():
                             if business_idx_str not in get_sf_business_ids():
                                 all_pushed = False
                                 break
-                       
+                        
                         # Create columns for left-justified button layout
                         button_col1, button_col2 = create_wide_button_layout()
-                       
+                        
                         with button_col1:
                             if all_pushed:
                                 # Show success message instead of button when all are pushed
@@ -4444,7 +4355,7 @@ def main():
                             else:
                                 # Salesforce Push Button - left-justified, not full width
                                 button_label = "Send Selected to Salesforce"
-                               
+                                
                                 # Add CSS for button styling but remove full-width
                                 st.markdown("""
                                 <style>
@@ -4454,23 +4365,23 @@ def main():
                                 }
                                 </style>
                                 """, unsafe_allow_html=True)
-                               
+                                
                                 if st.button(button_label, type="primary", key="sf_push_button"):
                                     # Only add to Salesforce when button is actually clicked
                                     add_businesses_to_salesforce(selected_for_sf)
-                                   
+                                    
                                     # The success message will show on next rerun when all_pushed becomes True
                                     st.rerun()
-           
+            
             with_loading_spinner("Loading data...", load_data_editor)
-           
+            
             # Clean responsive pagination layout with CSS classes for styling
             create_complete_pagination_ui(total_records, total_pages, start_idx, end_idx)    
 
         elif apply_filters and has_active_filters(filters):
             st.warning("No data matches the filters.")
 
-   
+    
     with tab2:
         map_styles = get_map_styles()
         if hasattr(st.session_state, 'active_filters') and st.session_state.active_filters and has_active_filters(st.session_state.active_filters):
@@ -4482,7 +4393,7 @@ def main():
                         st.session_state.active_filters, cache_key, st.session_state.page_size, 1, fetch_all=True
                     )
                     return map_df, total_records
-               
+                
                 map_df, total_records = with_loading_spinner("Fetching all data for map...", fetch_map_data)
                 map_data = map_df[[lat_col, lon_col, "DBA_NAME", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "REVENUE", "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "URL", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE"]].dropna(subset=[lat_col, lon_col])
                 map_data = map_data.rename(columns={lat_col: "lat", lon_col: "lon"})
@@ -4490,7 +4401,7 @@ def main():
                     (map_data["lat"].between(-90, 90)) &
                     (map_data["lon"].between(-180, 180))
                 ]
-               
+                
                 # Filter map data based on selected businesses from list view
                 if hasattr(st.session_state, 'selected_map_businesses'):
                     # User has interacted with the list view checkboxes
@@ -4504,7 +4415,7 @@ def main():
                 else:
                     # User hasn't interacted with list view yet - show all businesses by default
                     pass
-               
+                
                 if len(map_data) > MAP_POINTS_LIMIT:
                     map_data = map_data.sample(n=MAP_POINTS_LIMIT, random_state=42)
                     st.warning(f"Map limited to {MAP_POINTS_LIMIT} points for performance. Total records: {total_records}.")
@@ -4512,14 +4423,14 @@ def main():
                     # Function to get tooltip style based on map style with proper data validation
                     def get_tooltip_style(row):
                         is_dark_map = is_dark_map_style()
-                       
+                        
                         # Use helper functions for styling
                         tooltip_style = create_tooltip_style(is_dark_map)
                         header_style = create_tooltip_header_style(is_dark_map)
-                       
+                        
                         # Build sections with proper data validation (same logic as selected business card)
                         sections = build_tooltip_sections(row)
-                       
+                        
                         # Generate tooltip content with consolidated styling
                         content_html = ""
                         for section_title, items in sections:
@@ -4532,7 +4443,7 @@ def main():
                                         {items_html}
                                     </div>
                                 """
-                       
+                        
                         return f"""
                             <div style='{tooltip_style}'>
                                 <div style='{header_style}'>
@@ -4544,7 +4455,7 @@ def main():
                                 </div>
                             </div>
                         """
-                   
+                    
                     map_data["tooltip"] = map_data.apply(get_tooltip_style, axis=1)
                     map_data["index"] = map_data.index
                     min_lat, max_lat = map_data["lat"].min(), map_data["lat"].max()
@@ -4553,12 +4464,12 @@ def main():
                     center_lon = (min_lon + max_lon) / 2
                     lat_diff = max_lat - min_lat
                     lon_diff = max_lon - min_lon
-                   
+                    
                     # Add padding buffer for better visibility, especially with few points
                     padding_factor = 0.3  # 30% padding around the points
                     lat_diff = max(lat_diff, 0.01) + (lat_diff * padding_factor)  # Minimum diff for very close points
                     lon_diff = max(lon_diff, 0.01) + (lon_diff * padding_factor)
-                   
+                    
                     if lat_diff == 0 or lon_diff == 0:
                         default_zoom = DEFAULT_MAP_ZOOM  # Reduced from 11 for better initial view
                         initial_radius = 200
@@ -4569,14 +4480,14 @@ def main():
                         lon_zoom = math.log2(360 * viewport_width / (lon_diff * 256 * math.cos(math.radians(center_lat))))
                         # Reduced zoom calculation for better visibility with few points
                         default_zoom = min(lat_zoom, lon_zoom) - 2  # Changed from -1 to -2 for more zoom out
-                       
+                        
                         # Special handling for small number of points
                         if len(map_data) <= 3:
                             default_zoom = min(default_zoom, 10)  # Cap zoom for few points
-                       
+                        
                         default_zoom = max(2, min(15, round(default_zoom)))
                         initial_radius = max(50, 500000 / (2 ** default_zoom))
-                   
+                    
                     # Initialize map-related session state
                     init_session_state_key("initial_radius_scale", 1.0)
                     init_session_state_key("selected_radius_scale", 1.0)
@@ -4587,24 +4498,24 @@ def main():
                             "zoom": default_zoom
                         })
                     init_session_state_key("selected_business_indices", [])
-                   
+                    
                     # Migrate from old single selection to new multiple selection (if it exists)
                     if hasattr(st.session_state, 'selected_business_index') and st.session_state.selected_business_index is not None:
                         st.session_state.selected_business_indices = [st.session_state.selected_business_index]
                         delattr(st.session_state, 'selected_business_index')
-                   
+                    
                     # Clean up any indices that are no longer in the data
                     st.session_state.selected_business_indices = [
-                        idx for idx in st.session_state.selected_business_indices
+                        idx for idx in st.session_state.selected_business_indices 
                         if idx in map_data.index
                     ]
                     # Sort businesses alphabetically by name for better user experience
                     sorted_map_data = map_data.sort_values("DBA_NAME")
-                   
+                    
                     # Create business name options for multiselect
                     business_options = sorted_map_data["DBA_NAME"].tolist()
                     business_to_index = dict(zip(sorted_map_data["DBA_NAME"], sorted_map_data["index"]))
-                   
+                    
                     # Get current selection for multiselect
                     current_selection = []
                     if st.session_state.selected_business_indices:
@@ -4614,7 +4525,7 @@ def main():
                             ]
                             if not business_name.empty:
                                 current_selection.append(business_name.iloc[0])
-                   
+                    
                     # Use multiselect with built-in search functionality
                     selected_businesses = st.multiselect(
                         "🔍 Search and select up to 5 businesses to view details",
@@ -4625,12 +4536,12 @@ def main():
                         max_selections=5,
                         placeholder="Type to search business names..."
                     )
-                   
+                    
                     # Handle selection logic - allow multiple selections
                     selected_indices = []
                     if selected_businesses:
                         selected_indices = [business_to_index[name] for name in selected_businesses]
-                   
+                    
                     # Show total count
                     if hasattr(st.session_state, 'selected_map_businesses'):
                         if len(st.session_state.selected_map_businesses) > 0:
@@ -4639,11 +4550,11 @@ def main():
                             st.caption(f"No businesses selected for mapping - map is empty • {len(selected_businesses)}/5 selected")
                     else:
                         st.caption(f"Showing all {len(map_data)} businesses on map (default) • {len(selected_businesses)}/5 selected")
-                   
+                    
                     # Update session state with new selections
                     if set(selected_indices) != set(st.session_state.selected_business_indices):
                         st.session_state.selected_business_indices = selected_indices
-                       
+                        
                         # Calculate new map view state to encompass all selected businesses
                         if selected_indices:
                             selected_data = map_data.loc[map_data.index.isin(selected_indices)]
@@ -4661,16 +4572,16 @@ def main():
                                 selected_lon_min, selected_lon_max = selected_data["lon"].min(), selected_data["lon"].max()
                                 selected_center_lat = (selected_lat_min + selected_lat_max) / 2
                                 selected_center_lon = (selected_lon_min + selected_lon_max) / 2
-                               
+                                
                                 # Calculate base differences
                                 selected_lat_diff = selected_lat_max - selected_lat_min
                                 selected_lon_diff = selected_lon_max - selected_lon_min
-                               
+                                
                                 # Add padding buffer for better visibility (SAME AS INITIAL MAP VIEW)
                                 padding_factor = 0.3  # 30% padding around the points (matching initial view)
                                 selected_lat_diff = max(selected_lat_diff, 0.01) + (selected_lat_diff * padding_factor)
                                 selected_lon_diff = max(selected_lon_diff, 0.01) + (selected_lon_diff * padding_factor)
-                               
+                                
                                 if selected_lat_diff == 0 or selected_lon_diff == 0:
                                     selected_zoom = DEFAULT_MAP_ZOOM  # Same as initial view for zero diff
                                 else:
@@ -4679,10 +4590,10 @@ def main():
                                     viewport_height = 600
                                     lat_zoom = math.log2(360 * viewport_height / (selected_lat_diff * 256))
                                     lon_zoom = math.log2(360 * viewport_width / (selected_lon_diff * 256 * math.cos(math.radians(selected_center_lat))))
-                                   
+                                    
                                     # Reduced zoom calculation for better visibility (SAME AS INITIAL MAP VIEW)
                                     selected_zoom = min(lat_zoom, lon_zoom) - 2  # Same -2 reduction as initial view
-                                   
+                                    
                                     # Special handling for 2-3 business selections (more aggressive zoom-in)
                                     num_selected = len(st.session_state.selected_business_indices)
                                     if num_selected == 2 or num_selected == 3:
@@ -4693,16 +4604,16 @@ def main():
                                         # For other small numbers, use the original logic
                                         selected_zoom = max(selected_zoom, 8)
                                         selected_zoom = min(selected_zoom, 12)
-                                   
+                                    
                                     # Ensure reasonable zoom bounds (SAME AS INITIAL MAP VIEW)
                                     selected_zoom = max(4, min(15, round(selected_zoom)))  # Raised minimum from 2 to 4
-                               
+                                
                                 st.session_state.map_view_state = {
                                     "latitude": selected_center_lat,
                                     "longitude": selected_center_lon,
                                     "zoom": selected_zoom
                                 }
-                           
+                            
                             base_selected_scale = 30 / initial_radius if initial_radius != 0 else 1.0
                             st.session_state.selected_radius_scale = base_selected_scale
                             st.session_state.default_selected_radius_scale = base_selected_scale
@@ -4717,7 +4628,7 @@ def main():
                             st.session_state.selected_radius_scale = 1.0
                             st.session_state.default_selected_radius_scale = 1.0
                         st.rerun()
-                   
+                    
                     # Function to get non-selected point color based on map style
                     def get_non_selected_color():
                         current_map_style = get_current_map_style()
@@ -4727,7 +4638,7 @@ def main():
                         # For dark and satellite maps: use a much lighter blue (lighter than Pulse Blue)  
                         else:  # dark_mode or satellite_alt
                             return [173, 216, 255, 100]  # Light Sky Blue (lighter derivative of Global Blue palette)
-                   
+                    
                     # Display selected business details
                     if st.session_state.selected_business_indices:
                         # Define colors for selected businesses using Global Payments tertiary palette
@@ -4738,77 +4649,77 @@ def main():
                             [135, 23, 157, 200],   # Grape
                             [244, 54, 76, 200]     # Raspberry
                         ]
-                       
+                        
                         selected_business_data = map_data.loc[map_data.index.isin(st.session_state.selected_business_indices)]
-                       
+                        
                         def format_business_data_html(business_data):
                             """Generate business card HTML with simplified structure"""
                             business_idx_str = str(business_data.name if hasattr(business_data, 'name') else business_data.get('BUSINESS_ID', ''))
                             already_pushed = business_idx_str in get_sf_business_ids()
-                           
+                            
                             # Build header
                             sf_status = '<span class="sf-push-status">✓ Pushed to Salesforce</span>' if already_pushed else ''
                             header = f'<h3><div class="business-name-container">{business_data["DBA_NAME"]}</div>{sf_status}</h3>'
-                           
+                            
                             # Build sections using consolidated helper
                             sections = build_business_card_sections(business_data)
-                           
+                            
                             return f'''<div class="business-details-card">{header}<div class="business-data-dashboard">{"".join(sections)}</div></div>'''
-                       
+                        
                         if len(st.session_state.selected_business_indices) == 1:
                             # Single business - show full details
                             business_data = selected_business_data.iloc[0]
                             st.markdown(format_business_data_html(business_data), unsafe_allow_html=True)
-                           
+                            
                             # Add native Streamlit button for Salesforce action
                             business_idx = business_data.name if hasattr(business_data, 'name') else None
                             sf_key = f"sf_push_{business_idx}"
                             business_name = business_data.get("DBA_NAME", "")
-                           
+                            
                             # Check if this business was already pushed to Salesforce
                             business_idx_str = str(business_idx)
                             already_pushed = business_idx_str in get_sf_business_ids()
-                           
+                            
                             if not already_pushed:
                                 # Create columns for left-justified button
                                 sf_cols = create_button_layout()
                                 with sf_cols[0]:  # Button in left column
                                     # Updated button label with business name
                                     button_label = f"Send {business_name} to Salesforce"
-                                   
+                                    
                                     push_button = st.button(button_label, type="primary", key=sf_key)
-                                   
+                                    
                                     if push_button:
                                         # Make sure we have the complete business data
                                         business_idx = business_data.name if hasattr(business_data, 'name') else None
-                                       
+                                        
                                         # Add this business to Salesforce
                                         add_business_to_salesforce(business_idx)
-                                       
+                                        
                                         # Show success message with compact styling
                                         success_msg = f'<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✓ Added to Salesforce</p>'
                                         st.markdown(success_msg, unsafe_allow_html=True)
-                                       
+                                        
                                         # Log for debugging
                                         print(f"Pushed business ID {business_idx} to Salesforce")
                                         print(f"Total businesses in Salesforce: {st.session_state.sf_pushed_count}")
-                                       
+                                        
                                         # Rerun to update UI
                                         st.rerun()
                         else:
                             # Multiple businesses - show in tabs and add bulk actions
-                           
+                            
                             # Check if all selected businesses are already pushed
                             all_pushed = True
                             for idx in st.session_state.selected_business_indices:
                                 if str(idx) not in get_sf_business_ids():
                                     all_pushed = False
                                     break
-                           
+                            
                             # Add compact bulk push button - left justified
                             # Create columns for left-justified button layout
                             btn_col1, btn_col2 = create_button_layout()
-                           
+                            
                             with btn_col1:
                                 if all_pushed:
                                     # Use markdown with custom styling - left-justified
@@ -4816,7 +4727,7 @@ def main():
                                 else:
                                     # Updated button label
                                     button_label = "Send Selected to Salesforce"
-                                   
+                                    
                                     # Add CSS to prevent button text wrapping
                                     st.markdown("""
                                     <style>
@@ -4826,19 +4737,19 @@ def main():
                                     }
                                     </style>
                                     """, unsafe_allow_html=True)
-                                   
-                                    bulk_push = st.button(button_label,
+                                    
+                                    bulk_push = st.button(button_label, 
                                                 type="primary", key="sf_bulk_push_button")
                                     if bulk_push:
                                         # Get the subset of businesses that are selected
                                         selected_businesses = selected_business_data.loc[selected_business_data.index.isin(st.session_state.selected_business_indices)].copy()
-                                       
+                                        
                                         # Add each business to Salesforce
                                         count = add_businesses_to_salesforce(selected_businesses)
-                                       
+                                        
                                         # Rerun to update UI
                                         st.rerun()
-                           
+                            
                             # Multiple businesses - show in tabs
                             business_names = []
                             for idx in st.session_state.selected_business_indices:
@@ -4849,24 +4760,24 @@ def main():
                                 if already_pushed:
                                     name = f"{name} ✓"
                                 business_names.append(name)
-                           
+                            
                             tab_labels = [f"📍 {name[:25]}..." if len(name) > 25 else f"📍 {name}" for name in business_names]
                             selected_tabs = st.tabs(tab_labels)
-                           
+                            
                             for i, (tab, idx) in enumerate(zip(selected_tabs, st.session_state.selected_business_indices)):
                                 with tab:
                                     business_data = selected_business_data.loc[selected_business_data.index == idx].iloc[0]
                                     st.markdown(format_business_data_html(business_data), unsafe_allow_html=True)
-                                   
+                                    
                                     # Add native Streamlit button for Salesforce action
                                     business_idx = business_data.name if hasattr(business_data, 'name') else None
                                     sf_key = f"sf_push_tab_{i}_{business_idx}"
                                     business_name = business_data.get("DBA_NAME", "")
-                                   
+                                    
                                     # Check if this business was already pushed to Salesforce
                                     business_idx_str = str(business_idx)
                                     already_pushed = business_idx_str in get_sf_business_ids()
-                                   
+                                    
                                     # Create a smaller, more compact layout with columns
                                     if already_pushed:
                                         # No button needed, so no columns needed
@@ -4876,7 +4787,7 @@ def main():
                                         # This helps ensure the button text stays on one line
                                         left_col_size = 1
                                         right_col_size = 1
-                                       
+                                        
                                         if len(business_name) <= 10:
                                             # Very short names
                                             left_col_size, right_col_size = 2, 1  # 2:1 ratio
@@ -4886,44 +4797,44 @@ def main():
                                         else:
                                             # Long names
                                             left_col_size, right_col_size = 1, 2  # 1:2 ratio
-                                       
+                                        
                                         # Create a dynamic layout with columns for left-justified button
                                         sf_cols = create_button_layout()
                                         with sf_cols[0]:  # Button in left column
                                             # Updated button label with business name
                                             button_label = f"Send {business_name} to Salesforce"
-                                           
+                                            
                                             push_button = st.button(button_label, type="primary", key=sf_key)
-                                           
+                                            
                                             if push_button:
                                                 # Get the business ID
                                                 business_idx = business_data.name if hasattr(business_data, 'name') else None
-                                               
+                                                
                                                 # Add to Salesforce
                                                 add_business_to_salesforce(business_idx)
-                                               
+                                                
                                                 # Rerun to update UI
                                                 st.rerun()
                                                 st.write("Updating Salesforce tab data...")
-                                               
+                                                
                                                 # Show current state
                                                 st.write(f"Total businesses in Salesforce: {st.session_state.sf_pushed_count}")
                                                 st.write(f"Business IDs in Salesforce: {st.session_state.sf_business_ids}")
-                                               
+                                                
                                                 # Continue only if the user clicks to confirm
                                                 if st.button("Continue", key=f"tab_continue_{i}"):
                                                     st.rerun()
-                       
+                        
 
-                   
+                    
                     # Create map layers with multiple selection support
                     layers = []
-                   
+                    
                     if st.session_state.selected_business_indices:
                         # Calculate dynamic radius based on zoom level and selection count
                         current_zoom = st.session_state.map_view_state["zoom"]
                         selection_count = len(st.session_state.selected_business_indices)
-                       
+                        
                         # Dynamic radius calculation with better zoom scaling (reduced by ~50% for better visual clarity)
                         if selection_count == 1:
                             # Single selection - scale down radius for high zoom levels (reduced by ~75% total)
@@ -4938,7 +4849,7 @@ def main():
                         else:
                             # Multiple selections - scale based on zoom level (reduced by ~75% total)
                             base_multiplier = st.session_state.selected_radius_scale
-                           
+                            
                             # Zoom-based scaling: higher zoom = much smaller points
                             if current_zoom >= 15:
                                 zoom_scale = 0.025  # Very small for very close zoom
@@ -4950,12 +4861,12 @@ def main():
                                 zoom_scale = 4.0  # Larger for far zoom
                             else:
                                 zoom_scale = 2.0  # Default for other zoom levels
-                           
+                            
                             dynamic_radius_multiplier = base_multiplier * zoom_scale
-                       
+                        
                         # Separate selected and non-selected businesses
                         non_selected_data = map_data[~map_data.index.isin(st.session_state.selected_business_indices)]
-                       
+                        
                         # Create separate radius calculation for map view selected businesses (reduced by ~50% for better visual clarity)
                         map_view_radius_multiplier = st.session_state.selected_radius_scale
                         if current_zoom >= 15:
@@ -4966,7 +4877,7 @@ def main():
                             map_view_radius_multiplier *= 2.0  # Medium-small size
                         else:
                             map_view_radius_multiplier *= 2.5  # Reduced for far zoom
-                       
+                        
                         # Add non-selected businesses layer (gray/red) - only 10% smaller than selected
                         if not non_selected_data.empty:
                             layers.append(
@@ -4980,7 +4891,7 @@ def main():
                                     auto_highlight=True
                                 )
                             )
-                       
+                        
                         # Add each selected business as a separate layer with 3D columns/pillars
                         for i, business_idx in enumerate(st.session_state.selected_business_indices):
                             if business_idx in map_data.index:
@@ -5013,7 +4924,7 @@ def main():
                                 auto_highlight=True
                             )
                         )
-                   
+                    
                     # Create map view state
                     view_state = pdk.ViewState(
                         latitude=float(st.session_state.map_view_state["latitude"]),
@@ -5021,7 +4932,7 @@ def main():
                         zoom=int(st.session_state.map_view_state["zoom"]),
                         pitch=0
                     )
-                   
+                    
                     # Create tooltip
                     tooltip = {
                         "html": "{tooltip}",
@@ -5033,7 +4944,7 @@ def main():
                             "border-radius": "0"
                         }
                     }
-                   
+                    
                     # Create and display the map
                     deck = pdk.Deck(
                         layers=layers,
@@ -5041,12 +4952,12 @@ def main():
                         map_style=map_styles.get(get_current_map_style()),
                         tooltip=tooltip
                     )
-                   
+                    
                     # No longer need JavaScript for Salesforce buttons - using native Streamlit buttons
-                   
+                    
                     #st.markdown(f"**Total Businesses Displayed:** {len(map_data)}")
                     st.pydeck_chart(deck)
-                   
+                    
                     # Map controls styling
                     st.markdown(
                         """
@@ -5087,7 +4998,7 @@ def main():
                         """,
                         unsafe_allow_html=True
                     )
-                   
+                    
                     # Map controls
                     col_left, col_spacer, col_right = create_map_controls_layout()
                     with col_left:
@@ -5107,25 +5018,25 @@ def main():
                     with col_right:
                         # Map style buttons arranged in single row
                         style_col1, style_col2, style_col3, style_col4 = create_map_style_buttons_layout()
-                       
+                        
                         current_style = get_current_map_style()
-                       
+                        
                         create_map_style_button(
                             ":material/light_mode:",
-                            "map_style_light",
+                            "map_style_light", 
                             "Light map style",
                             current_style,
                             style_col1
                         )
-                       
+                        
                         create_map_style_button(
                             ":material/dark_mode:",
                             "map_style_dark",
-                            "Dark map style",
+                            "Dark map style", 
                             current_style,
                             style_col2
                         )
-                       
+                        
                         create_map_style_button(
                             ":material/satellite_alt:",
                             "map_style_satellite",
@@ -5133,7 +5044,7 @@ def main():
                             current_style,
                             style_col3
                         )
-                       
+                        
                         create_map_style_button(
                             ":material/terrain:",
                             "map_style_terrain",
@@ -5181,10 +5092,10 @@ def main():
                 st.pydeck_chart(deck)
         # else:
             # Removed redundant message - already shown in active filters section
-   
+    
     with tab3:
         st.markdown("""
-        <div style="padding: 20px; border-radius: 12px; background: linear-gradient(135deg, #f8faff 0%, #ffffff 100%);
+        <div style="padding: 20px; border-radius: 12px; background: linear-gradient(135deg, #f8faff 0%, #ffffff 100%); 
                     border: 1px solid #e6e9f3; box-shadow: 0 4px 20px rgba(38, 42, 255, 0.08);">
             <h2 style="color: #262aff; margin-bottom: 20px; display: flex; align-items: center;">
                 <span style="font-size: 28px; margin-right: 10px;">🚀</span> Salesforce Integration
@@ -5194,18 +5105,18 @@ def main():
             </p>
         </div>
         """, unsafe_allow_html=True)
-       
+        
         # Debug version info - helps track which approach is running
         st.caption(f"Version: Simple ID List (v3.0) | Last updated: {st.session_state.sf_last_update}")
-       
+        
         # Status Dashboard
         st.subheader("Lead Push Status")
-       
+        
         # Debug information
         if st.checkbox("Show Debug Info", key="sf_debug"):
             st.write("sf_business_ids:", get_sf_business_ids())
             st.write("sf_pushed_count:", get_sf_pushed_count())
-           
+            
             # Build business info from filtered_df if available
             business_details = []
             if "filtered_df" in st.session_state and not st.session_state.filtered_df.empty:
@@ -5217,7 +5128,7 @@ def main():
                         matching_rows = filtered_df[filtered_df.index == numeric_id]
                     except ValueError:
                         matching_rows = filtered_df[filtered_df.index.astype(str) == business_id]
-                   
+                    
                     if not matching_rows.empty:
                         row = matching_rows.iloc[0]
                         business_details.append({
@@ -5226,35 +5137,35 @@ def main():
                             "City": row.get("CITY", ""),
                             "State": row.get("STATE", "")
                         })
-           
+            
             if business_details:
                 st.write("Business details:")
                 st.json(business_details)
-           
+            
             # Also check for session state keys
             st.write("All session state keys:", list(st.session_state.keys()))
-       
+        
         # Status dashboard
         num_selected = get_sf_pushed_count()
-       
+        
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Selected for Push", num_selected, help="Number of businesses marked for Salesforce push")
-           
+            
             if num_selected > 0 and st.checkbox("Show Selected Businesses", key="show_sf_selected"):
                 # Try to get business names from filtered_df
                 if "filtered_df" in st.session_state and not st.session_state.filtered_df.empty:
                     filtered_df = st.session_state.filtered_df
-                   
+                    
                     # Get the business IDs from session state
                     business_ids = get_sf_business_ids()
-                   
+                    
                     # Try to find each business in the filtered_df
                     found_businesses = []
                     for business_id in business_ids:
                         # Try different formats of the ID
                         business_found = False
-                       
+                        
                         # Try as string
                         matching_str = filtered_df[filtered_df.index.astype(str) == business_id]
                         if not matching_str.empty:
@@ -5264,7 +5175,7 @@ def main():
                             })
                             business_found = True
                             continue
-                       
+                        
                         # Try as int
                         try:
                             numeric_id = int(business_id)
@@ -5278,14 +5189,14 @@ def main():
                                 continue
                         except ValueError:
                             pass
-                       
+                        
                         # If not found, add a placeholder
                         if not business_found:
                             found_businesses.append({
                                 "ID": business_id,
                                 "Name": f"Business {business_id}"
                             })
-                   
+                    
                     # Show the businesses
                     if found_businesses:
                         st.dataframe(pd.DataFrame(found_businesses))
@@ -5294,55 +5205,55 @@ def main():
                 else:
                     # Simple display without details
                     st.write(f"Business IDs: {st.session_state.get('sf_business_ids', [])}")
-           
+            
             # Add a manual reset option
             if st.button("Reset Salesforce Data"):
                 # Store current state for debugging
                 old_ids = list(get_sf_business_ids())
                 old_count = get_sf_pushed_count()
-               
+                
                 # Reset all Salesforce-related variables
                 st.session_state.sf_business_ids = []
                 st.session_state.sf_pushed_count = 0
                 st.session_state.sf_last_update = datetime.now().isoformat()
-               
+                
                 # Also clear any other Salesforce-related variables that might exist
                 for key in list(st.session_state.keys()):
                     if key.startswith("sf_") and key not in ["sf_business_ids", "sf_pushed_count", "sf_last_update"]:
                         del st.session_state[key]
-               
+                
                 # Debug output
                 st.write(f"Reset {old_count} businesses from Salesforce")
                 st.write(f"Cleared IDs: {old_ids}")
-               
+                
                 show_success_message("Salesforce data reset successfully")
                 st.rerun()
-               
+                
         with col2:
             st.metric("Successfully Pushed", 0, help="Number of leads successfully pushed to Salesforce")
         with col3:
             st.metric("Failed", 0, help="Number of leads that failed to push")
-           
+            
         # Salesforce Configuration
         st.subheader("Configuration")
-       
+        
         # Tabs for different configuration sections
         config_tab1, config_tab2, config_tab3 = st.tabs(["Connection", "Field Mapping", "Workflow"])
-       
+        
         with config_tab1:
             st.markdown("### Salesforce Connection Settings")
             st.text_input("Salesforce Instance URL", placeholder="https://yourinstance.salesforce.com", disabled=True)
             st.text_input("API Username", placeholder="api.user@example.com", disabled=True)
             st.text_input("API Key", placeholder="••••••••••••••••", type="password", disabled=True)
             st.checkbox("Use Sandbox Environment", value=True, disabled=True)
-           
+            
             st.info("Salesforce API credentials will be configured when the integration is ready.")
-           
+            
         with config_tab2:
             st.markdown("### Field Mapping")
             st.markdown("""
             The following fields will be mapped to Salesforce Lead object:
-           
+            
             | Prospect Tool Field | Salesforce Field |
             | ------------------- | ---------------- |
             | DBA_NAME | Company |
@@ -5357,9 +5268,9 @@ def main():
             | NUMBER_OF_EMPLOYEES | NumberOfEmployees |
             | PRIMARY_INDUSTRY | Industry |
             """)
-           
+            
             st.info("Custom field mappings will be available when the integration is ready.")
-           
+            
         with config_tab3:
             st.markdown("### Workflow Configuration")
             st.selectbox(
@@ -5378,19 +5289,19 @@ def main():
                 ["Lead Assignment", "Lead Scoring", "Email Notification", "Task Creation"],
                 disabled=True
             )
-           
+            
             st.info("Workflow configuration will be available when the integration is ready.")
-       
+        
         # API Test Section
         st.subheader("API Testing")
         st.write("This section will allow testing the Salesforce API connection and lead push functionality.")
-       
+        
         test_col1, test_col2 = st.columns(2)
         with test_col1:
             st.button("Test Connection", disabled=True)
         with test_col2:
             st.button("Push Test Lead", disabled=True)
-           
+            
         st.info("API testing will be available when the integration is ready.")
 
 
