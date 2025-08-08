@@ -1,21 +1,14 @@
-#This app is built in streamlit in snowflake and has some limitations that don't exist in streamlit itself.
-# =============================================================================
-# IMPORTS AND DEPENDENCIES
-# =============================================================================
 
-# Streamlit - Main web application framework
 import streamlit as st
 import _snowflake  # For Snowflake-specific Streamlit functions
 
-# Snowflake - Database connectivity and session management
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.exceptions import SnowparkSQLException
 from snowflake.snowpark.functions import col
 
-# Data manipulation and analysis
+
 import pandas as pd
 
-# Utilities for caching, formatting, and data processing
 import hashlib          # For creating cache keys from filter combinations
 import time            # For performance monitoring and retry logic
 import json            # For serializing/deserializing saved search filters
@@ -23,86 +16,77 @@ import re              # For phone number formatting and text validation
 import urllib.parse    # For URL encoding address parameters
 from datetime import datetime  # For timestamps in Salesforce integration
 
-# Visualization and mapping
 import pydeck as pdk   # For interactive maps with business locations
 import math            # For map zoom calculations and coordinate math
 
-# Logging for debugging and performance monitoring
-import logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# =============================================================================
-# CONFIGURATION CONSTANTS
-# =============================================================================
 
-# Database Configuration
-# Main table containing the complete business prospect data
-TABLE_NAME = "SANDBOX.CONKLIN.PROSPECTOR_SAMPLE"
+TABLE_CONFIG = {
+    "table_name": "sandbox.conklin.prospect_tool_table",  # Updated main table name
+    "filter_table_name": "sandbox.conklin.VW_Prospector_filter_options_new",  # Updated filter table name
+}
 
-# View optimized for filter dropdown options (contains unique values for faster queries)
-FILTER_TABLE_NAME = "SANDBOX.CONKLIN.VW_PROSPECTOR_FILTER_OPTIONS"
 
-# Default column to sort results by
-SORT_COL = "DBA_NAME"
+def get_table_name():
+    return TABLE_CONFIG["table_name"]
 
-# UI Configuration
-MAX_RESULTS = 100  # Maximum records to fetch per query
-MAP_POINTS_LIMIT = 50  # Maximum businesses to display on map for performance
+
+
+
+def get_filter_table_name():
+    return TABLE_CONFIG["filter_table_name"]
+
+MAX_RESULTS = 300  # Maximum records to fetch per query
+MAP_POINTS_LIMIT = 100  # Maximum businesses to display on map for performance
 PAGE_SIZE_OPTIONS = [10, 25, 50, 100]  # Available pagination options for different screen sizes
-DEFAULT_PAGE_SIZE = 25  # Default records per page (balanced for responsive design)
+DEFAULT_PAGE_SIZE = 100  # Default records per page (balanced for responsive design)
 ROW_HEIGHT = 45  # Height of each row in data display (optimized for compact view)
 
-# Cache Configuration
 CACHE_TTL = 600  # Cache time-to-live in seconds (10 minutes)
 
-# Map Configuration
 DEFAULT_MAP_ZOOM = 9  # Default zoom level for map view
 SELECTED_BUSINESS_ZOOM = 15  # Zoom level when a single business is selected
 CHIPS_PER_ROW = 3  # Number of filter chips per row for compact display
 
-# Data Processing Configuration
 MIN_DISPLAY_ROWS = 2  # Minimum rows to display in data tables
 MAX_DATAFRAME_HEIGHT = 1000  # Maximum height for dataframes
 HEADER_BUFFER_HEIGHT = 50  # Buffer height for dataframe headers
 
-# Phone Number Configuration
 PHONE_LENGTH_STANDARD = 10  # Standard US phone number length
 PHONE_LENGTH_WITH_COUNTRY = 11  # US phone number with country code
 
-# Default Values
 DEFAULT_RADIUS_SCALE = 1.0  # Default radius scale for map markers
 DEFAULT_STEP_SIZE = 1.0  # Default step size for numeric inputs
 
-# UI Text Constants
 BUTTON_LABEL_VISIT_SITE = "Visit Site"
 BUTTON_LABEL_CALL = "Call"
 BUTTON_LABEL_EMAIL = "Email"
 BUTTON_LABEL_GET_DIRECTIONS = "Get Directions"
 
-# =============================================================================
-# FILTER CONFIGURATION
-# =============================================================================
-# Defines the available filters, their types, and how they should be displayed in the UI
-# Each filter maps to a database column and specifies the UI component type
 STATIC_FILTERS = {
     # Text-based search filters
     "DBA_NAME": {"type": "text", "label": "Business Name", "column_name": "DBA_NAME"},
-    "ZIP": {"type": "text", "label": "Zip Code", "column_name": "ZIP"},
-    
+    # Location radius search filters
+    "LOCATION_ADDRESS": {"type": "text", "label": "Address or ZIP Code", "column_name": "LOCATION_ADDRESS"},
+    "RADIUS_MILES": {"type": "number", "label": "Radius (Miles)", "column_name": "RADIUS_MILES", "min_value": 1, "max_value": 500, "default": 25},
     # Dropdown filters (populated dynamically from database)
-    "STATE": {"type": "dropdown", "label": "State", "column_name": "STATE"},
-    "CITY": {"type": "dropdown", "label": "City", "column_name": "CITY"},
     "PRIMARY_INDUSTRY": {"type": "dropdown", "label": "Primary Industry", "column_name": "PRIMARY_INDUSTRY"},
     "SUB_INDUSTRY": {"type": "dropdown", "label": "Sub Industry", "column_name": "SUB_INDUSTRY"},
-    "SIC_CODE": {"type": "dropdown", "label": "SIC Code", "column_name": "SIC_CODE"},
-    
+    "MCC_CODE": {"type": "dropdown", "label": "MCC Code", "column_name": "MCC_CODE"},
     # Range filters for numeric values (min/max sliders)
     "REVENUE": {"type": "range", "label": "Revenue", "column_name": "REVENUE"},
     "NUMBER_OF_EMPLOYEES": {"type": "range", "label": "Number of Employees", "column_name": "NUMBER_OF_EMPLOYEES"},
     "NUMBER_OF_LOCATIONS": {"type": "range", "label": "Number of Locations", "column_name": "NUMBER_OF_LOCATIONS"},
-    
-    # B2B/B2C filters as selectboxes with three options
+    "HAS_CONTACT_INFO": {
+        "type": "selectbox", 
+        "label": "Contact Info Filter", 
+        "column_name": "HAS_CONTACT_INFO",
+        "options": [
+            "Only Prospects with Contact Info",
+            "Show All Prospects",
+            "Only Prospects without Contact Info"
+        ]
+    },
     "B2B": {
         "type": "selectbox",
         "label": "B2B",
@@ -125,69 +109,48 @@ STATIC_FILTERS = {
     }
 }
 
-# =============================================================================
-# SNOWFLAKE CONNECTION SETUP
-# =============================================================================
-
-# Establish Snowflake connection with retry logic for reliability
-# This is critical as the entire application depends on database connectivity
 retries = 3
 for attempt in range(retries):
     try:
-        # Get the active Snowpark session (assumes Snowflake credentials are configured)
         session = get_active_session()
         break
     except SnowparkSQLException as e:
         if attempt < retries - 1:
-            # Exponential backoff: wait 1s, then 2s, then 4s before retrying
             time.sleep(2 ** attempt)
         else:
-            # After all retries failed, show error and stop the application
             st.error(f"Failed to connect to Snowflake after {retries} retries: {str(e)}")
             st.stop()
 
-# Configure Streamlit page settings
 st.set_page_config(page_title="Prospector POC", layout="wide")
 
-# =============================================================================
-# SESSION STATE MANAGEMENT
-# =============================================================================
 
 def initialize_session_state():
-    
-    # Initialize all Streamlit session state variables with default values.
-    # This ensures consistent state across user interactions and page refreshes.
-    # Session state maintains data between Streamlit reruns and user interactions.
+
 
     defaults = {
-        # Filter Management
-        # Stores current filter values for each filter type - structure matches STATIC_FILTERS
         "filters": {
             col: (
                 [] if STATIC_FILTERS[col]["type"] == "dropdown" else
                 [None, None] if STATIC_FILTERS[col]["type"] == "range" else
                 STATIC_FILTERS[col]["options"][0] if STATIC_FILTERS[col]["type"] == "selectbox" else
+                STATIC_FILTERS[col]["default"] if STATIC_FILTERS[col]["type"] == "number" else
                 ""  # Empty string for text inputs
             )
             for col in STATIC_FILTERS
         },
-        
         # Data Management
         "last_update_time": 0,              # Timestamp of last data refresh
         "filtered_df": pd.DataFrame(),      # Currently filtered dataset
         "active_filters": {},               # Filters actually applied to data
         "total_records": 0,                 # Total count matching current filters
-        
         # Pagination
         "current_page": 1,                  # Current page number for pagination
         "page_size": DEFAULT_PAGE_SIZE,     # Records per page
-        
         # Search Management
         "search_name": "",                  # Name for saving current search
         "selected_search": "",              # Currently loaded saved search
         "confirm_delete_search": False,     # Confirmation state for search deletion
         "search_to_delete": None,           # Search marked for deletion
-        
         # UI State Management
         "filter_update_trigger": {          # Tracks when dropdown filters need refreshing
             col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] == "dropdown"
@@ -195,29 +158,25 @@ def initialize_session_state():
         "reset_counter": 0,                 # Triggers filter reset when incremented
         "sidebar_collapsed": False,         # Controls sidebar visibility
         "data_editor_refresh_counter": 0,   # Forces data editor refresh
-        
         # Map Interaction
         "map_style_selector": ":material/dark_mode:",  # Current map style
         "selected_business_indices": [],    # Businesses selected on map
         "business_search_term": "",         # Search term for business filtering
-        
         # Salesforce Integration (Simple ID tracking approach)
         "sf_pushed_count": 0,              # Count of businesses marked for Salesforce
         "sf_business_ids": [],             # List of business IDs to push to Salesforce
-        "sf_last_update": datetime.now().isoformat()  # Timestamp of last Salesforce update
+        "sf_last_update": datetime.now().isoformat(),  # Timestamp of last Salesforce update
+        # Geocoding cache
+        "geocode_cache": {}                 # Cache for geocoded addresses to avoid repeated API calls
     }
     
-    # Only set defaults for keys that don't already exist
-    # This preserves existing session state across reruns
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
 def get_current_user(session):
-    """Get current Snowflake user - handle Streamlit in Snowflake limitations"""
     try:
-        # Try multiple methods to get user info
         user_queries = [
             "SELECT CURRENT_USER()",           # <-- Primary method
             "SELECT USER_NAME()",              # <-- Alternative 1
@@ -234,144 +193,36 @@ def get_current_user(session):
             except:
                 continue
         
-        # Clean fallback for Streamlit in Snowflake
         return "SIS_USER"  # <-- Fallback if all methods fail
         
     except Exception as e:
         return "SIS_USER"
 
-# =============================================================================
-# SALESFORCE INTEGRATION
-# =============================================================================
 
 def add_business_to_salesforce(business_id):
-    """
-    Track a business ID for Salesforce lead push.
-    
-    Args:
-        business_id: The unique identifier of the business to track
-        
-    Returns:
-        bool: True if business was newly added, False if already exists
-    """
-    # Ensure we're working with a string ID for consistency
+
     business_id_str = str(business_id)
     
-    # Initialize the tracking list if it doesn't exist
-    if "sf_business_ids" not in st.session_state:
-        st.session_state.sf_business_ids = []
     
     # Check if already tracked to avoid duplicates
-    if business_id_str in st.session_state.sf_business_ids:
+    if business_id_str in st.session_state["sf_business_ids"]:
         return False
     
     # Add the new business ID
-    st.session_state.sf_business_ids.append(business_id_str)
+    st.session_state["sf_business_ids"].append(business_id_str)
     
     # Update the counter and timestamp
-    st.session_state.sf_pushed_count = len(st.session_state.sf_business_ids)
-    st.session_state.sf_last_update = datetime.now().isoformat()
+    st.session_state["sf_pushed_count"] = len(st.session_state["sf_business_ids"])
+    st.session_state["sf_last_update"] = datetime.now().isoformat()
     
     return True
 
-def run_cortex_analyst(sidebar_prompt, session, _snowflake, CORTEX_MODEL_PATH, API_ENDPOINT, API_TIMEOUT, rerun_on_success=True):
-    """Run Cortex Analyst API and update session state. Returns True if successful."""
-    cortex_messages = []
-    cortex_messages.append({
-        "role": "user",
-        "content": [{"type": "text", "text": sidebar_prompt}],
-    })
-    request_body = {
-        "messages": cortex_messages,
-        "semantic_model_file": f"@{CORTEX_MODEL_PATH}",
-    }
-    try:
-        resp = _snowflake.send_snow_api_request(
-            "POST", API_ENDPOINT, {}, {}, request_body, None, API_TIMEOUT
-        )
-        parsed_content = json.loads(resp["content"])
-        if resp["status"] < 400:
-            analyst_message = {
-                "role": "analyst",
-                "content": parsed_content["message"]["content"],
-                "request_id": parsed_content["request_id"],
-            }
-            st.session_state.cortex_messages = cortex_messages + [analyst_message]
-            st.session_state.last_sidebar_cortex_prompt = sidebar_prompt
-            for item in analyst_message["content"]:
-                if item.get("type") == "sql" and "statement" in item:
-                    try:
-                        cortex_df = session.sql(item["statement"]).to_pandas()
-                        st.session_state.filtered_df = cortex_df
-                        st.session_state.total_records = len(cortex_df)
-                    except Exception as e:
-                        st.error(f"Error executing Cortex SQL for List/Map View: {e}")
-                    break
-            if rerun_on_success:
-                st.session_state.analyst_running = False
-            return True
-        else:
-            st.error(f"Cortex Analyst API error: {parsed_content.get('message', 'Unknown error')}")
-    except Exception as e:
-        st.error(f"Error running Cortex Analyst: {e}")
-    st.session_state.analyst_running = False
-    return False
-
-def add_businesses_to_salesforce(business_df):
-    """
-    Track multiple businesses for Salesforce lead push from a DataFrame.
-    
-    Args:
-        business_df: DataFrame containing businesses to track (uses index as ID)
-        
-    Returns:
-        int: Number of businesses newly added to tracking
-    """
-    if business_df.empty:
-        return 0
-    
-    # Extract business IDs and track new additions
-    business_ids = business_df.index.tolist()
-    newly_added = 0
-    
-    for business_id in business_ids:
-        if add_business_to_salesforce(business_id):
-            newly_added += 1
-    
-    return newly_added
-
-# =============================================================================
-# UI STYLING AND CSS
-# =============================================================================
 
 
-# Initialize session state before any UI rendering
+
 initialize_session_state()
 
 
-# --- B2B/B2C filter logic ---
-def apply_b2b_b2c_filters(df, filters):
-    # B2B logic
-    b2b_choice = filters.get("B2B", "Include B2B & B2C")
-    if b2b_choice == "Exclude B2B":
-        df = df[df["IS_B2B"] == 0]
-    elif b2b_choice == "Only B2B":
-        df = df[df["IS_B2B"] == 1]
-    # B2C logic
-    b2c_choice = filters.get("B2C", "Include B2B & B2C")
-    if b2c_choice == "Exclude B2C":
-        df = df[df["IS_B2C"] == 0]
-    elif b2c_choice == "Only B2C":
-        df = df[df["IS_B2C"] == 1]
-    return df
-
-# Comprehensive CSS styling for responsive design and Global Payments branding
-# This large CSS block handles:
-# - Global Payments color palette and typography (DM Sans font)
-# - Responsive design variables and breakpoints
-# - Component styling (buttons, inputs, data tables, maps)
-# - Business detail cards with modern design elements
-# - Accessibility improvements (ARIA labels, focus states)
 st.markdown("""
     <style>
     /* Import DM Sans font from Google Fonts - Global Payments brand typography */
@@ -1863,19 +1714,7 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-# --------------------------------------------------------------------------------------------------
-# Unified DataFrame Filter Function
-# --------------------------------------------------------------------------------------------------
 def get_filtered_dataframe(df, filters, display_columns=None):
-    """
-    Apply filters to the DataFrame and return a standardized result for list/map views.
-    Args:
-        df (pd.DataFrame): The full DataFrame to filter.
-        filters (dict): Dictionary of filter values (from sidebar or analyst prompt).
-        display_columns (list, optional): List of columns to display in output. If None, use all.
-    Returns:
-        pd.DataFrame: Filtered and formatted DataFrame.
-    """
     filtered_df = df.copy()
     for key, value in filters.items():
         filter_cfg = STATIC_FILTERS.get(key)
@@ -1917,76 +1756,19 @@ def get_filtered_dataframe(df, filters, display_columns=None):
     filtered_df = filtered_df.reset_index(drop=True)
     return filtered_df
 
-if not st.session_state.sidebar_collapsed:
+
+if not st.session_state["sidebar_collapsed"]:
     with st.sidebar:
-        # Logo with title underneath for vertical alignment
         st.image("https://cdn.bfldr.com/ZGS6MXDP/at/2cs39569fprccp99mf97np54/global-logo-color", use_container_width=True)
         st.markdown("<h1 class='gp-center-text gp-font-sm gp-color-primary' style='margin: 0rem 0; font-family: var(--font-family-primary);'>Prospecting Portal</h1>", unsafe_allow_html=True)
-        # Cortex Analyst Prompt above filters
-        if "sidebar_cortex_prompt" not in st.session_state:
-            st.session_state.sidebar_cortex_prompt = ""
-        # Use a flag to reset the prompt value after reset
-        if st.session_state.get("reset_sidebar_cortex_prompt", False):
-            sidebar_prompt_value = ""
-            st.session_state.reset_sidebar_cortex_prompt = False
-        else:
-            sidebar_prompt_value = st.session_state.sidebar_cortex_prompt
 
-        with st.expander("Chat Agent", expanded=True):
-            sidebar_prompt = st.text_area(
-                "Ask a question about your prospects...",
-                value=sidebar_prompt_value,
-                key="sidebar_cortex_prompt",
-                height=100,
-                help="Enter your question or prompt for the Cortex Analyst. Supports multiple lines."
-            )
-            run_analyst = st.button("Run Analyst", key="run_analyst_button", help="Run Cortex Analyst and update List/Map views with results.")
-        st.markdown("""
-        <div style="display: flex; align-items: center; width: 100%;">
-          <hr style="flex:1; border:none; border-top:1px solid #ccc; margin:0 8px 0 0;">
-          <span style="white-space:nowrap; font-weight:500;">Or</span>
-          <hr style="flex:1; border:none; border-top:1px solid #ccc; margin:0 0 0 8px;">
-        </div>
-""", unsafe_allow_html=True)
-        #st.markdown("<hr>", unsafe_allow_html=True)
-        # Refactored: Use unified filter function for analyst prompt
-        if run_analyst and st.session_state.sidebar_cortex_prompt:
-            # Build filters from analyst prompt (if needed, parse prompt to filters)
-            # For now, treat prompt as a text filter on DBA_NAME or similar
-            analyst_filters = st.session_state.filters.copy()
-            analyst_filters["DBA_NAME"] = st.session_state.sidebar_cortex_prompt
-            st.session_state.active_filters = analyst_filters
-            # Standardize output columns for analyst prompt
-            display_columns = [
-                "DBA_NAME", "STATE", "CITY", "ZIP", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE", "B2B", "B2C"
-            ]
-            st.session_state.filtered_df = get_filtered_dataframe(
-                st.session_state.full_df if "full_df" in st.session_state else pd.DataFrame(),
-                analyst_filters,
-                display_columns
-            )
 
-# Title
-# st.markdown("<h1 style='text-align: center; font-size: 1.5rem; margin: 0.5rem 0; color: var(--gp-primary); font-family: var(--font-family-primary);'>Prospecting Hub</h1>", unsafe_allow_html=True)
 
-# =============================================================================
-# SEARCH MANAGEMENT FUNCTIONS
-# =============================================================================
+
+
+
 
 def save_search(user_id, search_name, filters):
-
-    # Save current filter configuration as a named search for future use.
-    
-    # Serializes the current filter state to JSON and stores it in the database
-    # along with the user ID and search name. This allows users to save and
-    # reload complex filter combinations.
-    
-    # Args:
-    #     user_id: Identifier for the current user
-    #     search_name: User-provided name for this search
-    #     filters: Current filter configuration dictionary
-        
-    # Note: Validates filter structure before saving to ensure data integrity
 
     try:
         if not filters:
@@ -2021,6 +1803,18 @@ def save_search(user_id, search_name, filters):
                     cleaned_filters[key] = value.strip()
                 else:
                     show_error_message("Invalid text filter", f"for {key}: {value} (expected string)")
+                    return
+            elif config.get("type") == "selectbox":
+                if isinstance(value, str) and value in config.get("options", []):
+                    cleaned_filters[key] = value
+                else:
+                    show_error_message("Invalid selectbox filter", f"for {key}: {value} (expected one of {config.get('options', [])})")
+                    return
+            elif config.get("type") == "number":
+                if isinstance(value, (int, float)):
+                    cleaned_filters[key] = value
+                else:
+                    show_error_message("Invalid number filter", f"for {key}: {value} (expected number)")
                     return
         try:
             filters_json = json.dumps(cleaned_filters, ensure_ascii=False)
@@ -2061,17 +1855,6 @@ def save_search(user_id, search_name, filters):
         show_error_message("Error saving search", f"{str(e)} (Filters: {cleaned_filters}, JSON: {filters_json})")
 def load_saved_searches(user_id):
 
-    # Retrieve all saved searches for a specific user.
-    
-    # Queries the database for saved search names associated with the user ID.
-    # Used to populate the saved search dropdown in the UI.
-    
-    # Args:
-    #     user_id: Identifier for the current user
-        
-    # Returns:
-    #     list: List of dictionaries containing search names, or empty list if none found
-
     try:
         df = session.table("SANDBOX.CONKLIN.SAVED_SEARCHES") \
                     .filter(col("USER_ID") == user_id) \
@@ -2084,20 +1867,6 @@ def load_saved_searches(user_id):
         return []
 
 def load_search(user_id, search_name):
-
-    # Load a specific saved search and restore its filter configuration.
-    
-    # Retrieves the filter configuration from the database and deserializes it
-    # from JSON. Updates the session state to apply the loaded filters.
-    
-    # Args:
-    #     user_id: Identifier for the current user
-    #     search_name: Name of the saved search to load
-        
-    # Side Effects:
-    #     Updates st.session_state.filters with the loaded configuration
-    #     Triggers page rerun to apply the loaded filters
-
     try:
         query = """
             SELECT FILTERS
@@ -2108,15 +1877,19 @@ def load_search(user_id, search_name):
         if not df.empty:
             filters = json.loads(df["FILTERS"].iloc[0])
             for key in STATIC_FILTERS:
-                if key not in st.session_state.filters:
+                if key not in st.session_state["filters"]:
                     if STATIC_FILTERS[key]["type"] == "range":
-                        st.session_state.filters[key] = [None, None]
+                        st.session_state["filters"][key] = [None, None]
                     elif STATIC_FILTERS[key]["type"] == "dropdown":
-                        st.session_state.filters[key] = []
+                        st.session_state["filters"][key] = []
                     elif STATIC_FILTERS[key]["type"] == "checkbox":
-                        st.session_state.filters[key] = False
+                        st.session_state["filters"][key] = False
+                    elif STATIC_FILTERS[key]["type"] == "selectbox":
+                        st.session_state["filters"][key] = STATIC_FILTERS[key]["options"][0]
+                    elif STATIC_FILTERS[key]["type"] == "number":
+                        st.session_state["filters"][key] = STATIC_FILTERS[key].get("default", 0)
                     else:
-                        st.session_state.filters[key] = ""
+                        st.session_state["filters"][key] = ""
             for key, value in filters.items():
                 if key in STATIC_FILTERS:
                     if STATIC_FILTERS[key]["type"] == "range":
@@ -2124,52 +1897,39 @@ def load_search(user_id, search_name):
                             try:
                                 min_val = float(value[0]) if value[0] is not None else None
                                 max_val = float(value[1]) if value[1] is not None else None
-                                st.session_state.filters[key] = [min_val, max_val]
+                                st.session_state["filters"][key] = [min_val, max_val]
                             except (ValueError, TypeError):
-                                st.session_state.filters[key] = [None, None]
+                                st.session_state["filters"][key] = [None, None]
                         else:
-                            st.session_state.filters[key] = [None, None]
+                            st.session_state["filters"][key] = [None, None]
+                    elif STATIC_FILTERS[key]["type"] == "number":
+                        try:
+                            st.session_state["filters"][key] = float(value) if value is not None else STATIC_FILTERS[key].get("default", 0)
+                        except (ValueError, TypeError):
+                            st.session_state["filters"][key] = STATIC_FILTERS[key].get("default", 0)
                     else:
-                        st.session_state.filters[key] = value
-            st.session_state.last_update_time = time.time()
+                        st.session_state["filters"][key] = value
+            st.session_state["last_update_time"] = time.time()
             reset_to_first_page()
             increment_session_state_counter('load_search_counter')
             for col in get_filters_by_type("dropdown"):
-                st.session_state.filter_update_trigger[col] += 1
+                st.session_state["filter_update_trigger"][col] += 1
             show_success_message(f"Loaded search '{search_name}' successfully!")
-            st.session_state.search_name = ""
-            st.session_state.selected_search = ""
+            st.session_state["search_name"] = ""
+            st.session_state["selected_search"] = ""
             st.rerun()
         else:
             st.warning(f"No saved search found with name '{search_name}'.")
-            st.session_state.search_name = ""
-            st.session_state.selected_search = ""
+            st.session_state["search_name"] = ""
+            st.session_state["selected_search"] = ""
             st.rerun()
     except Exception as e:
         show_error_message("Error loading search", str(e))
-        st.session_state.search_name = ""
-        st.session_state.selected_search = ""
+        st.session_state["search_name"] = ""
+        st.session_state["selected_search"] = ""
         st.rerun()
 
-# =============================================================================
-# DATABASE FUNCTIONS AND CACHING
-# =============================================================================
-
-# Cache key generation
 def create_cache_key(column, dependent_filters):
-
-    # Generate a unique cache key for filter combinations.
-    
-    # Creates a hash-based key that represents the current state of filters
-    # for a specific column. This enables efficient caching of dropdown options
-    # that depend on other filter values (e.g., cities filtered by selected state).
-    
-    # Args:
-    #     column: The column name to generate a cache key for
-    #     dependent_filters: Dictionary of current filter values that affect this column
-        
-    # Returns:
-    #     str: MD5 hash representing the unique filter combination
 
     filter_str = f"{column}:"
     for dep_col, dep_val in sorted(dependent_filters.items()):
@@ -2177,7 +1937,10 @@ def create_cache_key(column, dependent_filters):
             if STATIC_FILTERS[dep_col]["type"] == "dropdown":
                 val_str = ",".join(sorted(map(str, dep_val))) if dep_val else ""
             elif STATIC_FILTERS[dep_col]["type"] == "range":
-                min_val, max_val = dep_val
+                if isinstance(dep_val, (list, tuple)) and len(dep_val) == 2:
+                    min_val, max_val = dep_val
+                else:
+                    min_val, max_val = None, None
                 val_str = f"{min_val or ''}_{max_val or ''}"
             elif STATIC_FILTERS[dep_col]["type"] == "text":
                 val_str = str(dep_val)
@@ -2189,36 +1952,17 @@ def create_cache_key(column, dependent_filters):
         filter_str += f"{dep_col}={val_str};"
     return hashlib.md5(filter_str.encode()).hexdigest()
 
-# Database query functions
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def fetch_unique_values(column, dependent_filters, cache_key, _trigger):
-
-    # Fetch unique values for dropdown filters with dependency filtering.
-    
-    # Retrieves distinct values for a specific column, optionally filtered by
-    # other active filters. For example, when a state is selected, this function
-    # returns only cities within that state. Uses caching for performance.
-    
-    # Args:
-    #     column: Column name to fetch unique values for
-    #     dependent_filters: Other active filters that should constrain the results
-    #     cache_key: Unique identifier for caching (from create_cache_key)
-    #     _trigger: Cache invalidation trigger (incremented to force refresh)
-        
-    # Returns:
-    #     list: Sorted list of unique values for the column
-        
-    # Note: Uses FILTER_TABLE_NAME for optimized performance on large datasets
 
     try:
         start_time = time.time()
         column_name = STATIC_FILTERS.get(column, {}).get("column_name", column)
-        query = f"SELECT DISTINCT {column_name} FROM {FILTER_TABLE_NAME} WHERE {column_name} IS NOT NULL"
+        query = f"SELECT DISTINCT {column_name} FROM {get_filter_table_name()} WHERE {column_name} IS NOT NULL"
         params = []
         dropdown_columns = [k for k, v in STATIC_FILTERS.items() if v["type"] == "dropdown"]
         for dep_col, dep_values in dependent_filters:
             if dep_col not in dropdown_columns and STATIC_FILTERS[dep_col]["type"] != "text":
-                logger.debug(f"Skipping dependent filter {dep_col} as it's not a dropdown or text column")
                 continue
             dep_column_name = STATIC_FILTERS.get(dep_col, {}).get("column_name", dep_col)
             if isinstance(dep_values, (list, tuple)) and len(dep_values) == 2 and all(v is None for v in dep_values):
@@ -2260,47 +2004,96 @@ def fetch_unique_values(column, dependent_filters, cache_key, _trigger):
         MAX_OPTIONS = 100000
         if len(valid_values) > MAX_OPTIONS:
             valid_values = valid_values[:MAX_OPTIONS]
-            logger.info(f"Truncated {column} options from {len(values)} to {MAX_OPTIONS}")
             st.warning(f"Showing top {MAX_OPTIONS} {column.lower()} options. Refine filters for more specific results.")
         query_time = time.time() - start_time
-        logger.info(f"Fetched {len(valid_values)} unique values for {column} in {query_time:.2f} seconds")
         return valid_values
     except Exception as e:
         show_error_message(f"Error fetching unique values for {column}", str(e))
-        logger.error(f"Failed to fetch unique values for {column} with query: {query}, params: {params}, error: {str(e)}")
         return []
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=False):
 
-    # Fetch paginated business data based on applied filters.
-    
-    # Core data retrieval function that builds and executes SQL queries based on
-    # the current filter configuration. Supports pagination and returns both the
-    # data and total record count for pagination controls.
-    
-    # Args:
-    #     filters: Dictionary of active filter values
-    #     _cache_key: Cache invalidation key (unused but required for caching)
-    #     page_size: Number of records per page
-    #     current_page: Current page number (1-based)
-    #     fetch_all: If True, fetch all records regardless of pagination
-        
-    # Returns:
-    #     tuple: (DataFrame of filtered data, total record count)
-        
-    # Note: Builds dynamic SQL with parameterized queries for security
-
     try:
-        columns = ["ACCOUNT_ID", "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE",
-           "REVENUE", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C", "LONGITUDE", "LATITUDE", "FULL_ADDRESS", "URL"]
-        count_query = f"SELECT COUNT(*) AS total FROM {TABLE_NAME}"
-        query = f"SELECT {', '.join(columns)} FROM {TABLE_NAME}"
+        logical_columns = [
+            "IDENTIFIER", "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE",
+            "REVENUE", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C", "LONGITUDE", "LATITUDE", "FULL_ADDRESS", "WEBSITE", "IS_CURRENT_CUSTOMER", "DATA_AGG_UID", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE",
+            "TOP10_CONTACTS", "CONTACT_NATIONAL_DNC", "INTERNAL_DNC", "HAS_CONTACT_INFO"
+            ]
+        logical_to_actual = {"MCC_CODE": "MCC_CODE", "B2B": "IS_B2B", "B2C": "IS_B2C"}
+        # All columns except TOP10_CONTACTS come from main table, TOP10_CONTACTS comes from tc
+        columns = [
+            f"main.{logical_to_actual.get(col, col)}" if col != "TOP10_CONTACTS" else "tc.TOP10_CONTACTS" for col in logical_columns
+        ]
+        count_query = f"SELECT COUNT(*) AS total FROM {get_table_name()} main"
+        query = f"SELECT {', '.join(columns)} FROM {get_table_name()} main LEFT JOIN sandbox.conklin.top_contacts tc ON main.PROSPECT_ID = tc.PROSPECT_ID"
         where_clauses = []
         params = []
-        logger.info(f"Filters received: {filters}")
+        
+        # Handle radius-based location search
+        location_address = filters.get("LOCATION_ADDRESS", "")
+        radius_miles = filters.get("RADIUS_MILES", 25)
+        
+        if location_address and location_address.strip():
+            # Geocode the address
+            geocode_result = geocode_address(location_address)
+            if geocode_result:
+                center_lat = geocode_result['latitude']
+                center_lon = geocode_result['longitude']
+                
+                # Store the search center location in session state for map display
+                st.session_state["search_center_location"] = {
+                    'address': location_address.strip(),
+                    'latitude': center_lat,
+                    'longitude': center_lon,
+                    'radius_miles': radius_miles
+                }
+                
+                # Use Haversine formula for radius search
+                # Distance calculation in miles using Snowflake's built-in functions
+                distance_formula = f"""
+                    3959 * ACOS(
+                        COS(RADIANS(?)) * COS(RADIANS(main.LATITUDE)) * 
+                        COS(RADIANS(main.LONGITUDE) - RADIANS(?)) + 
+                        SIN(RADIANS(?)) * SIN(RADIANS(main.LATITUDE))
+                    )
+                """
+                where_clauses.append(f"({distance_formula}) <= ?")
+                params.extend([center_lat, center_lon, center_lat, radius_miles])
+                
+                # Also add a bounding box filter for performance optimization
+                lat_delta = radius_miles / 69.0  # Approximate miles per degree latitude
+                lon_delta = radius_miles / (69.0 * math.cos(math.radians(center_lat)))  # Adjust for longitude
+                
+                where_clauses.append("main.LATITUDE BETWEEN ? AND ?")
+                where_clauses.append("main.LONGITUDE BETWEEN ? AND ?")
+                params.extend([
+                    center_lat - lat_delta, center_lat + lat_delta,
+                    center_lon - lon_delta, center_lon + lon_delta
+                ])
+            else:
+                # If geocoding fails, show error and return empty results
+                st.error(f"Could not geocode address: '{location_address}'. Please try a different address or ZIP code.")
+                return pd.DataFrame(), 0
+        else:
+            # Clear search center location if no location filter is active
+            if "search_center_location" in st.session_state:
+                del st.session_state["search_center_location"]
+        
         for column, value in filters.items():
-            if column in STATIC_FILTERS:
+            # Skip the new location filters as they're handled above
+            if column in ["LOCATION_ADDRESS", "RADIUS_MILES"]:
+                continue
+                
+            if column == "customer_status":
+                if value == "Current Customers Only":
+                    where_clauses.append("IS_CURRENT_CUSTOMER = ?")
+                    params.append(True)
+                elif value == "Non-Customers Only":
+                    where_clauses.append("IS_CURRENT_CUSTOMER = ?")
+                    params.append(False)
+                # If "Show both...", do not filter
+            elif column in STATIC_FILTERS:
                 filter_type = STATIC_FILTERS[column]["type"]
                 if filter_type == "dropdown" and value:
                     where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} IN ({','.join(['?' for _ in value])})")
@@ -2325,8 +2118,18 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
                         where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
                         params.append(1)
                     # If "Include ...", do not filter
+                elif filter_type == "selectbox" and column == "HAS_CONTACT_INFO":
+                    # Handle HAS_CONTACT_INFO selectbox logic
+                    if value == "Only Prospects with Contact Info":
+                        where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
+                        params.append(True)
+                    elif value == "Only Prospects without Contact Info":
+                        where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
+                        params.append(False)
+                    # If "Show All Prospects", do not filter
                 elif filter_type == "checkbox" and value:
-                    where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} != ?")
+                    # Legacy checkbox handling (if any other checkboxes exist)
+                    where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
                     params.append(True)
                 elif filter_type == "text" and value.strip():
                     terms = [term.strip().lower() for term in value.split() if term.strip()]
@@ -2335,59 +2138,37 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
                             where_clauses.append(f"LOWER({STATIC_FILTERS[column]['column_name']}) LIKE ?")
                             params.append(f"%{term}%")
             elif column == "show_all_customers" and value:
-                # Special filter for showing only customers with valid ACCOUNT_ID
-                where_clauses.append("ACCOUNT_ID IS NOT NULL AND TRIM(ACCOUNT_ID) != '' AND UPPER(TRIM(ACCOUNT_ID)) != 'NAN'")
+                # Special filter for showing only customers with valid identifier
+                where_clauses.append("identifier IS NOT NULL AND TRIM(identifier) != '' AND UPPER(TRIM(identifier)) != 'NAN'")
         
         if where_clauses:
             condition = " WHERE " + " AND ".join(where_clauses)
             count_query += condition
             query += condition
-        logger.info(f"Count query: {count_query}")
-        logger.info(f"Count query params: {params}")
         total_records = execute_sql_query(count_query, params=params, operation_name="fetch_filtered_data_count", return_single_value=True)
-        logger.info(f"Total records: {total_records}")
         if "limit_warning" in st.session_state:
-            del st.session_state.limit_warning
-        query += f" ORDER BY {SORT_COL}"
+            del st.session_state["limit_warning"]
+        query += f" ORDER BY DBA_NAME"
         if total_records > MAX_RESULTS:
-            st.session_state.limit_warning = f"Result set contains {total_records} records, which exceeds the limit of {MAX_RESULTS}. Displaying the first {MAX_RESULTS} records."
+            st.session_state["limit_warning"] = f"Result set contains {total_records} records, which exceeds the limit of {MAX_RESULTS}. Displaying the first {MAX_RESULTS} records."
             query += f" LIMIT {MAX_RESULTS}"
             total_records = min(total_records, MAX_RESULTS)
         elif not fetch_all:
             offset = calculate_sql_offset(current_page, page_size)
             query += f" LIMIT {page_size} OFFSET {offset}"
-        logger.info(f"Data query: {query}")
-        logger.info(f"Data query params: {params}")
         df = execute_sql_query(query, params=params, operation_name="fetch_filtered_data")
-        logger.info(f"Retrieved {len(df)} rows")
         return df, total_records
     except Exception as e:
         show_error_message("Error fetching filtered data", f"{str(e)}\nQuery: {query}\nParams: {params}")
-        logger.error(f"Error in fetch_filtered_data: {str(e)}, query: {query}, params: {params}")
         return pd.DataFrame(), 0
 
-# =============================================================================
-# UI HELPER FUNCTIONS
-# =============================================================================
-
-# Filter display and summary functions
 def display_filter_summary(filters):
-
-    # Display a visual summary of currently active filters.
-    
-    # Creates a user-friendly display showing which filters are currently applied
-    # and their values. Helps users understand their current search criteria and
-    # provides quick access to clear filters.
-    
-    # Args:
-    #     filters: Dictionary of current filter values
-        
-    # Side Effects:
-    #     Renders Streamlit components showing active filters
-    #     Displays "no filters" message when no filters are active
-
     active_filters = []
     for column, value in filters.items():
+        # Skip location filters as they are handled separately below
+        if column in ["LOCATION_ADDRESS", "RADIUS_MILES"]:
+            continue
+            
         config = STATIC_FILTERS.get(column, {})
         label = config.get("label", column)
         if config.get("type") == "dropdown" and value:
@@ -2402,43 +2183,51 @@ def display_filter_summary(filters):
                 active_filters.append(f"{label}: ≤ {max_val}")
         elif config.get("type") == "checkbox" and value:
             active_filters.append(f"{label}: Excluded")
+        elif config.get("type") == "selectbox" and value and value != config.get("options", [""])[0]:
+            # Only show selectbox filter if it's not the default "show all" option
+            active_filters.append(f"{label}: {value}")
         elif config.get("type") == "text" and value.strip():
             terms = [term.strip() for term in value.split() if term.strip()]
             if terms:
                 active_filters.append(f"{label}: Contains {', '.join(f'{term!r}' for term in terms)}")
+        elif config.get("type") == "number" and value and value != config.get("default"):
+            active_filters.append(f"{label}: {value}")
         elif column == "show_all_customers" and value:
             active_filters.append("Customer Filter: Existing Customers Only")
     
-    # Hide no-filters message if filtered_df is non-empty (analyst or filters)
-    filtered_df = st.session_state.get('filtered_df', None)
+    # Special handling for location radius search
+    location_address = filters.get("LOCATION_ADDRESS", "")
+    radius_miles = filters.get("RADIUS_MILES", 25)
+    if location_address and location_address.strip():
+        # Add search center indicator emoji
+        active_filters.append(f"🎯 Location: Within {radius_miles} miles of '{location_address}'")
+
+    filtered_df = st.session_state.get("filtered_df", None)
     has_results = filtered_df is not None and not filtered_df.empty
-    if active_filters or has_results:
-        # Enhanced Global Payments themed active filters section - compact version
+    
+    # Show search center status even when no other filters are active
+    show_search_center_info = "search_center_location" in st.session_state
+    
+    if active_filters or has_results or show_search_center_info:
         with st.expander(f"Active Search Filters ({len(active_filters)})", expanded=False):
-            # Create compact filter chips using columns for better layout
+
             chips_per_row = CHIPS_PER_ROW  # More chips per row for compactness
             for i in range(0, len(active_filters), chips_per_row):
                 cols = st.columns(chips_per_row)
                 for j, filter_str in enumerate(active_filters[i:i+chips_per_row]):
                     with cols[j]:
-                        # Parse filter string to separate label from value for styling
                         if ":" in filter_str:
                             parts = filter_str.split(":", 1)  # Split on first colon only
                             filter_label = parts[0].strip()
                             filter_value = parts[1].strip()
                             
-                            # Clean up zip code display - remove "Contains ''" wrapper
                             if filter_label.lower() == "zip code" and "contains" in filter_value.lower():
-                                # Extract just the zip code from "Contains '12345'" format
                                 import re
                                 zip_match = re.search(r"'([^']+)'", filter_value)
                                 if zip_match:
                                     filter_value = zip_match.group(1)
-                            
-                            # Make the value part bold while keeping label normal
                             styled_filter = f"{filter_label}: <strong>{filter_value}</strong>"
                         else:
-                            # If no colon, just display as is
                             styled_filter = filter_str
                         
                         st.markdown(f"""
@@ -2459,9 +2248,29 @@ def display_filter_summary(filters):
                             {styled_filter}
                         </div>
                         """, unsafe_allow_html=True)
+            
+            # Show search center information if active
+            if "search_center_location" in st.session_state:
+                search_center = st.session_state["search_center_location"]
+                st.markdown("**🎯 Search Center Location:**")
+                st.markdown(f"""
+                <div style="
+                    background: linear-gradient(135deg, #262AFF 0%, #1CABFF 100%);
+                    color: white;
+                    border-radius: 12px;
+                    padding: 12px 16px;
+                    margin: 8px 0;
+                    font-family: 'DM Sans', sans-serif;
+                    font-size: 0.85rem;
+                    box-shadow: 0 2px 8px rgba(38, 42, 255, 0.15);
+                ">
+                    📍 <strong>{search_center['address']}</strong><br>
+                    🔍 Search radius: {search_center['radius_miles']} miles<br>
+                    📊 This location will be highlighted on the map
+                </div>
+                """, unsafe_allow_html=True)
     else:
-        # Show message ONLY if filtered_df is empty
-        filtered_df = st.session_state.get('filtered_df', None)
+        filtered_df = st.session_state.get("filtered_df", None)
         if filtered_df is None or filtered_df.empty:
             st.markdown("""
             <style>
@@ -2509,30 +2318,37 @@ def display_filter_summary(filters):
                 <p class="no-filters-subtext">Use the sidebar to narrow down your business prospects</p>
             </div>
             """, unsafe_allow_html=True)
-
-# Sidebar filter creation
-def create_sidebar_filters():
-    # Generate the complete sidebar filter interface with expandable sections.
-    
-    # This is the main UI generation function that creates all filter controls
-    # in the sidebar using expandable sections. It handles different filter types 
-    # (text, dropdown, range, checkbox) and manages their interdependencies.
-    
-    # Returns:
-    #     tuple: (current_filters_dict, apply_filters_boolean)
-    #         - current_filters_dict: Current values of all filters
-    #         - apply_filters_boolean: True if user clicked "Apply Filters" button
             
-    # Side Effects:
-    #     Renders the sidebar interface including:
-    #     - Expandable filter sections (Location, Business, Metrics)
-    #     - Individual filter controls for each filter type
-    #     - Saved search management (save, load, delete)
-    #     - Filter reset and apply buttons
+def apply_b2b_b2c_filters(df, filters):
+    # B2B logic
+    b2b_choice = filters.get("B2B", "Include B2B & B2C")
+    if b2b_choice == "Exclude B2B":
+        df = df[df["IS_B2B"] == 0]
+    elif b2b_choice == "Only B2B":
+        df = df[df["IS_B2B"] == 1]
+    # B2C logic
+    b2c_choice = filters.get("B2C", "Include B2B & B2C")
+    if b2c_choice == "Exclude B2C":
+        df = df[df["IS_B2C"] == 0]
+    elif b2c_choice == "Only B2C":
+        df = df[df["IS_B2C"] == 1]
+    return df
 
-    # Helper functions for filter generation
+def add_businesses_to_salesforce(business_df):
+
+    if business_df.empty:
+        return 0
+    business_ids = business_df.index.tolist()
+    newly_added = 0
+    
+    for business_id in business_ids:
+        if add_business_to_salesforce(business_id):
+            newly_added += 1
+    
+    return newly_added
+
+def create_sidebar_filters():
     def generate_text_filter(column, config, placeholder=None):
-        """Generate a text input filter"""
         label = config["label"]
         default_placeholder = f"Search {config['label'].lower()}"
         if placeholder is None:
@@ -2540,29 +2356,29 @@ def create_sidebar_filters():
         
         search_value = st.text_input(
             label,
-            value=st.session_state.filters.get(column, ""),
+            value=st.session_state["filters"].get(column, ""),
             key=f"{column}_filter",
             placeholder=placeholder,
             help=f"Enter terms to search for in {config['label'].lower()} (case-insensitive).",
             label_visibility="visible"
         )
         
-        if search_value != st.session_state.filters[column]:
-            st.session_state.filters[column] = search_value.strip()
-            st.session_state.last_update_time = time.time()
+        prev_value = st.session_state["filters"].get(column, "")
+        if search_value != prev_value:
+            st.session_state["filters"][column] = search_value.strip()
+            st.session_state["last_update_time"] = time.time()
             reset_to_first_page()
             update_filter_triggers(get_filters_by_type("dropdown"))
-            if time.time() - st.session_state.last_update_time < 0.3:
+            if time.time() - st.session_state["last_update_time"] < 0.3:
                 st.rerun()
         
         return search_value.strip()
     
     def generate_dropdown_filter(column, config):
-        """Generate a dropdown multiselect filter"""
         dependent_filters = {
-            k: st.session_state.filters[k]
+            k: st.session_state["filters"].get(k, "")
             for k in filter_columns
-            if k != column and k not in ["B2B", "B2C"] and is_filter_active(k, st.session_state.filters[k])
+            if k != column and k not in ["B2B", "B2C", "LOCATION_ADDRESS", "RADIUS_MILES"] and is_filter_active(k, st.session_state["filters"].get(k, ""))
         }
         
         cache_key = create_cache_key(column, dependent_filters)
@@ -2572,7 +2388,7 @@ def create_sidebar_filters():
                 column,
                 tuple(dependent_filters.items()),
                 cache_key,
-                st.session_state.filter_update_trigger[column]
+                st.session_state["filter_update_trigger"].get(column, 0)
             )
         )
         
@@ -2583,7 +2399,7 @@ def create_sidebar_filters():
             and str(v).lower() not in ['d', 'i', 'ii', 'u', 'none', 'null', '[', ']', '', 'invalid']
         ]
         
-        current_value = st.session_state.filters.get(column, [])
+        current_value = st.session_state["filters"].get(column, [])
         if not valid_values:
             st.warning(f"No {config['label'].lower()} options available. Try adjusting other filters.")
         
@@ -2597,12 +2413,12 @@ def create_sidebar_filters():
             help=f"Select one or more {config['label'].lower()} to filter results."
         )
         
-        if selected != st.session_state.filters[column]:
-            st.session_state.filters[column] = selected
-            st.session_state.last_update_time = time.time()
+        if selected != st.session_state["filters"][column]:
+            st.session_state["filters"][column] = selected
+            st.session_state["last_update_time"] = time.time()
             reset_to_first_page()
             update_filter_triggers(get_filters_by_type("dropdown"), exclude_column=column)
-            if time.time() - st.session_state.last_update_time < 0.3:
+            if time.time() - st.session_state["last_update_time"] < 0.3:
                 st.rerun()
         
         return selected
@@ -2611,7 +2427,7 @@ def create_sidebar_filters():
     filter_columns = list(STATIC_FILTERS.keys())
     dropdown_columns = [k for k, v in STATIC_FILTERS.items() if v["type"] == "dropdown"]
     
-    if not st.session_state.sidebar_collapsed:
+    if not st.session_state["sidebar_collapsed"]:
         with st.sidebar:
             # Enhanced CSS for the expandable sections design
             st.markdown("""
@@ -2682,17 +2498,42 @@ def create_sidebar_filters():
                 </style>
             """, unsafe_allow_html=True)
             
-            # Location Filters Expander
+            # Location Filters Expander - Radius Search
             with st.expander("Location", expanded=True):
-                # Text filters for location
-                for column in ["ZIP"]:
-                    if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "text":
-                        filters[column] = generate_text_filter(column, STATIC_FILTERS[column])
+                # Address/ZIP input for radius search
+                location_address = st.text_input(
+                    "Address or ZIP Code",
+                    value=st.session_state["filters"].get("LOCATION_ADDRESS", ""),
+                    key="location_address_filter",
+                    placeholder="Enter address or ZIP code (e.g., '1234 Main St, Anytown, ST' or '12345')",
+                    help="Enter a full address or ZIP code to search within a radius of that location."
+                )
                 
-                # Dropdown filters for location
-                for column in ["STATE", "CITY"]:
-                    if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "dropdown":
-                        filters[column] = generate_dropdown_filter(column, STATIC_FILTERS[column])
+                # Radius selection
+                radius_miles = st.number_input(
+                    "Search Radius (Miles)",
+                    min_value=STATIC_FILTERS["RADIUS_MILES"]["min_value"],
+                    max_value=STATIC_FILTERS["RADIUS_MILES"]["max_value"],
+                    value=st.session_state["filters"].get("RADIUS_MILES", STATIC_FILTERS["RADIUS_MILES"]["default"]),
+                    step=1,
+                    key="radius_miles_filter",
+                    help="Set the search radius in miles from the specified location."
+                )
+                
+                # Update filters if values changed
+                if location_address != st.session_state["filters"].get("LOCATION_ADDRESS", ""):
+                    st.session_state["filters"]["LOCATION_ADDRESS"] = location_address.strip()
+                    st.session_state["last_update_time"] = time.time()
+                    reset_to_first_page()
+                    update_filter_triggers(get_filters_by_type("dropdown"))
+                
+                if radius_miles != st.session_state["filters"].get("RADIUS_MILES", STATIC_FILTERS["RADIUS_MILES"]["default"]):
+                    st.session_state["filters"]["RADIUS_MILES"] = radius_miles
+                    st.session_state["last_update_time"] = time.time()
+                    reset_to_first_page()
+                
+                filters["LOCATION_ADDRESS"] = location_address.strip()
+                filters["RADIUS_MILES"] = radius_miles
             
             # Business Filters Expander
             with st.expander("Business Details", expanded=False):
@@ -2703,14 +2544,14 @@ def create_sidebar_filters():
                         filters[column] = generate_text_filter(column, STATIC_FILTERS[column], placeholder)
                 
                 # Business dropdown filters
-                for column in ["PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE"]:
+                for column in ["PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE"]:
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "dropdown":
                         filters[column] = generate_dropdown_filter(column, STATIC_FILTERS[column])
                 
                 # Business Type Filters (B2B/B2C) as selectboxes
                 for column in ["B2B", "B2C"]:
                     config = STATIC_FILTERS[column]
-                    current_value = st.session_state.filters.get(column, config["options"][0])
+                    current_value = st.session_state["filters"].get(column, config["options"][0])
                     if current_value not in config["options"]:
                         current_value = config["options"][0]
                     selected = st.selectbox(
@@ -2721,19 +2562,49 @@ def create_sidebar_filters():
                         help="Filter for Business to Business or Business to Customer accounts."
                     )
                     filters[column] = selected
-                    if selected != st.session_state.filters[column]:
-                        st.session_state.filters[column] = selected
-                        st.session_state.last_update_time = time.time()
+                    if selected != st.session_state["filters"][column]:
+                        st.session_state["filters"][column] = selected
+                        st.session_state["last_update_time"] = time.time()
                         reset_to_first_page()
+                
+                # Contact Info Filter as selectbox
+                contact_config = STATIC_FILTERS["HAS_CONTACT_INFO"]
+                current_contact_value = st.session_state["filters"].get("HAS_CONTACT_INFO", contact_config["options"][0])
+                if current_contact_value not in contact_config["options"]:
+                    current_contact_value = contact_config["options"][0]
+                contact_selected = st.selectbox(
+                    contact_config["label"],
+                    contact_config["options"],
+                    index=contact_config["options"].index(current_contact_value),
+                    key="has_contact_info_filter_selectbox",
+                    help="Filter prospects based on whether they have contact information available."
+                )
+                filters["HAS_CONTACT_INFO"] = contact_selected
+                if contact_selected != st.session_state["filters"]["HAS_CONTACT_INFO"]:
+                    st.session_state["filters"]["HAS_CONTACT_INFO"] = contact_selected
+                    st.session_state["last_update_time"] = time.time()
+                    reset_to_first_page()
                 
                 # Current customers section
                 st.markdown("**Customer Status**")
-                show_all_customers = st.checkbox(
-                    "Show only Current Customers", 
-                    help="Check to show only existing customers (with Account IDs)"
+                customer_status_options = [
+                    "Current and Non-Customers",
+                    "Current Customers Only",
+                    "Non-Customers Only"
+                ]
+                current_customer_status = st.session_state["filters"].get("customer_status", customer_status_options[0])
+                if current_customer_status not in customer_status_options:
+                    current_customer_status = customer_status_options[0]
+                customer_status = st.selectbox(
+                    "Current Customer Status",
+                    customer_status_options,
+                    index=customer_status_options.index(current_customer_status),
+                    key="customer_status_filter_selectbox",
+                    help="Filter by current customer status."
                 )
-                if show_all_customers:
-                    filters["show_all_customers"] = True
+                filters["customer_status"] = customer_status
+                if customer_status != st.session_state["filters"].get("customer_status", customer_status_options[0]):
+                    st.session_state["filters"]["customer_status"] = customer_status
             
             # Metrics Filters Expander
             with st.expander("Metrics", expanded=False):
@@ -2742,8 +2613,8 @@ def create_sidebar_filters():
                     if config["type"] == "range":
                         st.markdown(f"**{config['label']}**")
                         col1, col2 = create_two_column_layout([1, 1])
-                        current_min = st.session_state.filters[column][0]
-                        current_max = st.session_state.filters[column][1]
+                        current_min = st.session_state["filters"][column][0]
+                        current_max = st.session_state["filters"][column][1]
                         with col1:
                             min_val = st.number_input(
                                 "Minimum",
@@ -2767,12 +2638,12 @@ def create_sidebar_filters():
                         if min_val is not None and max_val is not None and min_val > max_val:
                             show_error_message(f"Error: Minimum {config['label']} cannot be greater than Maximum.")
                         new_value = [min_val, max_val]
-                        if new_value != st.session_state.filters[column]:
-                            st.session_state.filters[column] = new_value
-                            st.session_state.last_update_time = time.time()
+                        if new_value != st.session_state["filters"][column]:
+                            st.session_state["filters"][column] = new_value
+                            st.session_state["last_update_time"] = time.time()
                             reset_to_first_page()
                             update_filter_triggers(get_filters_by_type("dropdown"))
-                            if time.time() - st.session_state.last_update_time < 0.3:
+                            if time.time() - st.session_state["last_update_time"] < 0.3:
                                 st.rerun()
                         filters[column] = new_value
             
@@ -2790,27 +2661,29 @@ def create_sidebar_filters():
             
             # Reset button
             if st.button("Reset All", key="reset_filters", use_container_width=True, type="secondary"):
-                st.session_state.filters = {
-                    col: [] if STATIC_FILTERS[col]["type"] == "dropdown" else
-                         [None, None] if STATIC_FILTERS[col]["type"] == "range" else
-                         False if STATIC_FILTERS[col]["type"] == "checkbox" else
-                         ""
+                st.session_state["filters"] = {
+                    col: (
+                        [] if STATIC_FILTERS[col]["type"] == "dropdown" else
+                        [None, None] if STATIC_FILTERS[col]["type"] == "range" else
+                        STATIC_FILTERS[col]["options"][0] if STATIC_FILTERS[col]["type"] == "selectbox" else
+                        STATIC_FILTERS[col]["default"] if STATIC_FILTERS[col]["type"] == "number" else
+                        ""
+                    )
                     for col in STATIC_FILTERS
                 }
-                st.session_state.last_update_time = 0
+                # Reset Current Customer Status filter to default
+                st.session_state["filters"]["customer_status"] = "Current and Non-Customers"
+                st.session_state["last_update_time"] = 0
                 reset_to_first_page()
-                st.session_state.filtered_df = pd.DataFrame()
-                st.session_state.active_filters = {}
-                st.session_state.page_size = DEFAULT_PAGE_SIZE
-                st.session_state.total_records = 0
-                st.session_state.confirm_delete_search = False
-                st.session_state.search_to_delete = None
-                st.session_state.filter_update_trigger = {col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] == "dropdown"}
-                st.session_state.search_name = ""
-                st.session_state.selected_search = ""
-                st.session_state.reset_sidebar_cortex_prompt = True
-                st.session_state.last_sidebar_cortex_prompt = ""
-                st.session_state.cortex_messages = []
+                st.session_state["filtered_df"] = pd.DataFrame()
+                st.session_state["active_filters"] = {}
+                st.session_state["page_size"] = DEFAULT_PAGE_SIZE
+                st.session_state["total_records"] = 0
+                st.session_state["confirm_delete_search"] = False
+                st.session_state["search_to_delete"] = None
+                st.session_state["filter_update_trigger"] = {col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] == "dropdown"}
+                st.session_state["search_name"] = ""
+                st.session_state["selected_search"] = ""
                 increment_session_state_counter('reset_counter')
                 if "map_view_state" in st.session_state:
                     del st.session_state.map_view_state
@@ -2818,10 +2691,10 @@ def create_sidebar_filters():
                     del st.session_state.previous_point_selector
                 if "business_multiselect" in st.session_state:
                     del st.session_state.business_multiselect
-                st.session_state.business_search_term = ""
-                st.session_state.selected_business_indices = []
-                st.session_state.radius_scale = DEFAULT_RADIUS_SCALE
-                logger.info(f"Reset Filters clicked: search_name={st.session_state.search_name}, selected_search={st.session_state.selected_search}, reset_counter={st.session_state.reset_counter}")
+                st.session_state["business_search_term"] = ""
+                st.session_state["selected_business_indices"] = []
+                st.session_state["radius_scale"] = DEFAULT_RADIUS_SCALE
+                st.session_state["geocode_cache"] = {}  # Clear geocoding cache
                 st.rerun()
 
             # Apply button
@@ -2833,14 +2706,14 @@ def create_sidebar_filters():
                 disabled=not has_filters or has_errors
             )
             if apply_filters and has_filters and not has_errors:
-                st.session_state.active_filters = filters
-                st.session_state.radius_scale = 1.0
+                st.session_state["active_filters"] = filters
+                st.session_state["radius_scale"] = 1.0
                 # Standardize output columns for sidebar filters
                 display_columns = [
-                    "DBA_NAME", "STATE", "CITY", "ZIP", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE", "B2B", "B2C"
+                    "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "B2B", "B2C"
                 ]
-                st.session_state.filtered_df = get_filtered_dataframe(
-                    st.session_state.full_df if "full_df" in st.session_state else pd.DataFrame(),
+                st.session_state["filtered_df"] = get_filtered_dataframe(
+                    st.session_state["full_df"] if "full_df" in st.session_state else pd.DataFrame(),
                     filters,
                     display_columns
                 )
@@ -2850,46 +2723,46 @@ def create_sidebar_filters():
                 # Use current Snowflake user as default for User ID
                 current_user = get_current_user(get_active_session())
                 user_id = st.text_input("User ID", value=current_user, help="Enter your user ID or email", key="user_id_input")
-                search_name_key = f"search_name_input_{get_load_search_counter()}_{st.session_state.reset_counter}"
-                st.session_state.search_name = st.text_input(
+                search_name_key = f"search_name_input_{get_load_search_counter()}_{st.session_state['reset_counter']}"
+                st.session_state["search_name"] = st.text_input(
                     "Search Name",
-                    value=st.session_state.search_name,
+                    value=st.session_state["search_name"],
                     placeholder="Enter a name for this search",
                     key=search_name_key
                 )
                 if st.button("Save Search", key="save_search", use_container_width=True, type="primary"):
-                    if st.session_state.search_name and has_active_filters(filters):
-                        save_search(user_id, st.session_state.search_name, filters)
-                        st.session_state.search_name = ""
-                        st.session_state.selected_search = ""
+                    if st.session_state["search_name"] and has_active_filters(filters):
+                        save_search(user_id, st.session_state["search_name"], filters)
+                        st.session_state["search_name"] = ""
+                        st.session_state["selected_search"] = ""
                         st.rerun()
                     else:
                         st.warning("Please provide a search name and apply at least one filter.")
                 
                 saved_searches = load_saved_searches(user_id)
-                load_search_key = f"load_search_{get_load_search_counter()}_{st.session_state.reset_counter}"
-                st.session_state.selected_search = st.selectbox(
+                load_search_key = f"load_search_{get_load_search_counter()}_{st.session_state['reset_counter']}"
+                st.session_state["selected_search"] = st.selectbox(
                     "Load Saved Search",
                     options=[""] + [s["SEARCH_NAME"] for s in saved_searches],
-                    index=0 if not st.session_state.selected_search else [s["SEARCH_NAME"] for s in saved_searches].index(st.session_state.selected_search) + 1 if st.session_state.selected_search in [s["SEARCH_NAME"] for s in saved_searches] else 0,
+                    index=0 if not st.session_state["selected_search"] else [s["SEARCH_NAME"] for s in saved_searches].index(st.session_state["selected_search"]) + 1 if st.session_state["selected_search"] in [s["SEARCH_NAME"] for s in saved_searches] else 0,
                     placeholder="Select a saved search",
                     key=load_search_key
                 )
                 
                 # Load Search button (full width)
-                if st.button("Load Search", key="load_search_button", use_container_width=True, type="primary", disabled=not st.session_state.selected_search):
-                    if st.session_state.selected_search:
-                        load_search(user_id, st.session_state.selected_search)
+                if st.button("Load Search", key="load_search_button", use_container_width=True, type="primary", disabled=not st.session_state["selected_search"]):
+                    if st.session_state["selected_search"]:
+                        load_search(user_id, st.session_state["selected_search"])
                 
                 # Delete Search button (full width)
-                if st.button("Delete Search", key="delete_search", use_container_width=True, type="secondary", disabled=not st.session_state.selected_search):
-                    st.session_state.confirm_delete_search = True
-                    st.session_state.search_to_delete = st.session_state.selected_search
+                if st.button("Delete Search", key="delete_search", use_container_width=True, type="secondary", disabled=not st.session_state["selected_search"]):
+                    st.session_state["confirm_delete_search"] = True
+                    st.session_state["search_to_delete"] = st.session_state["selected_search"]
                     time.sleep(0.1)
                     st.rerun()
                 
-                if st.session_state.confirm_delete_search and st.session_state.search_to_delete:
-                    st.warning(f"Are you sure you want to delete '{st.session_state.search_to_delete}'?")
+                if st.session_state["confirm_delete_search"] and st.session_state["search_to_delete"]:
+                    st.warning(f"Are you sure you want to delete '{st.session_state['search_to_delete']}'?")
                     col_confirm, col_cancel = create_two_column_layout([1, 1])
                     with col_confirm:
                         if st.button("Confirm", key="confirm_delete", use_container_width=True, type="primary"):
@@ -2899,90 +2772,50 @@ def create_sidebar_filters():
                                     DELETE FROM SANDBOX.CONKLIN.SAVED_SEARCHES
                                     WHERE USER_ID = ? AND SEARCH_NAME = ?
                                     """,
-                                    params=[user_id, st.session_state.search_to_delete],
+                                    params=[user_id, st.session_state["search_to_delete"]],
                                     operation_name="delete_saved_search"
                                 )
-                                show_success_message(f"Deleted search '{st.session_state.search_to_delete}' successfully!")
-                                st.session_state.confirm_delete_search = False
-                                st.session_state.search_to_delete = None
-                                st.session_state.search_name = ""
-                                st.session_state.selected_search = ""
+                                show_success_message(f"Deleted search '{st.session_state['search_to_delete']}' successfully!")
+                                st.session_state["confirm_delete_search"] = False
+                                st.session_state["search_to_delete"] = None
+                                st.session_state["search_name"] = ""
+                                st.session_state["selected_search"] = ""
                                 st.rerun()
                             except Exception as e:
                                 show_error_message("Error deleting search", str(e))
-                                st.session_state.confirm_delete_search = False
-                                st.session_state.search_to_delete = None
-                                st.session_state.search_name = ""
-                                st.session_state.selected_search = ""
+                                st.session_state["confirm_delete_search"] = False
+                                st.session_state["search_to_delete"] = None
+                                st.session_state["search_name"] = ""
+                                st.session_state["selected_search"] = ""
                                 st.rerun()
                     with col_cancel:
                         if st.button("Cancel", key="cancel_delete", use_container_width=True, type="secondary"):
-                            st.session_state.confirm_delete_search = False
-                            st.session_state.search_to_delete = None
-                            st.session_state.search_name = ""
-                            st.session_state.selected_search = ""
+                            st.session_state["confirm_delete_search"] = False
+                            st.session_state["search_to_delete"] = None
+                            st.session_state["search_name"] = ""
+                            st.session_state["selected_search"] = ""
                             st.rerun()
     
     return filters, apply_filters
 
-# =============================================================================
-# DATA FORMATTING FUNCTIONS
-# =============================================================================
-
-# URL formatting
 def format_url(value):
-
-    # Standardize URL format for consistent display and linking.
-    
-    # Ensures URLs have proper protocol prefixes and removes common formatting
-    # issues. Handles edge cases like missing protocols, leading slashes, and
-    # null/empty values.
-    
-    # Args:
-    #     value: Raw URL value from database (may be None, empty, or malformed)
-        
-    # Returns:
-    #     str or None: Properly formatted URL with https:// prefix, or None if invalid
-        
-    # Examples:
-    #     format_url("google.com") -> "https://google.com"
-    #     format_url("/path/to/page") -> "https://path/to/page"
-    #     format_url(None) -> None
 
     if pd.isna(value) or not value or str(value).strip() in ['-', '', 'nan', 'None']:
         return None
     
     url = str(value).strip()
-    
+
     # Remove leading slash if present
     if url.startswith('/'):
         url = url[1:]
-    
-    # Add https:// if no protocol is present
-    if not url.startswith(('http://', 'https://')):
+
+    # Only add https:// if not already present
+    if not url.lower().startswith(('http://', 'https://')):
         url = f"https://{url}"
-    
+
     return url
 
-# Phone number formatting
 def format_phone_for_display(value):
-
-    # Format phone numbers for consistent display.
-    
-    # Standardizes phone number display format using US conventions.
-    # Strips non-numeric characters and applies (XXX) XXX-XXXX formatting
-    # for 10-digit numbers, with special handling for 11-digit numbers starting with 1.
-    
-    # Args:
-    #     value: Raw phone number from database (may include formatting, extensions, etc.)
-        
-    # Returns:
-    #     str or None: Formatted phone number for display, or None if invalid
-        
-    # Examples:
-    #     format_phone_for_display("1234567890") -> "(123) 456-7890"
-    #     format_phone_for_display("11234567890") -> "(123) 456-7890"
-    #     format_phone_for_display("invalid") -> "invalid" (returns original if can't parse)
 
     if pd.isna(value) or not value or str(value).strip() in ['-', '', 'nan', 'None']:
         return None
@@ -2996,22 +2829,6 @@ def format_phone_for_display(value):
         return str(value).strip()
 
 def format_phone_for_link(value):
-
-    # Format phone numbers for tel: protocol links.
-    
-    # Creates clickable phone links using the tel: protocol for
-    # VoIP applications. Ensures proper international formatting with country codes.
-    
-    # Args:
-    #     value: Raw phone number from database
-        
-    # Returns:
-    #     str or None: tel: protocol URL for clickable phone links, or None if invalid
-        
-    # Examples:
-    #     format_phone_for_link("1234567890") -> "tel:+11234567890"
-    #     format_phone_for_link("11234567890") -> "tel:+11234567890"
-    #     format_phone_for_link("invalid") -> "tel:invalid" (fallback for non-standard formats)
 
     if pd.isna(value) or not value or str(value).strip() in ['-', '', 'nan', 'None']:
         return None
@@ -3028,22 +2845,7 @@ def format_phone_for_link(value):
         return f"tel:{phone}" if phone else None
 
 def format_address_for_link(address_parts):
-    """
-    Format address components into a URL for map applications.
-    
-    Creates a cross-platform map URL that works with various map applications.
-    Uses the maps:// scheme which is compatible with most desktop map applications.
-    
-    Args:
-        address_parts: List of address components (street, city, state, zip)
-        
-    Returns:
-        str or None: Maps URL for the address, or None if invalid
-        
-    Examples:
-        format_address_for_link(["123 Main St", "Springfield", "IL", "62701"])
-        -> "maps:q=123+Main+St,+Springfield,+IL,+62701"
-    """
+
     if not address_parts:
         return None
     
@@ -3053,10 +2855,6 @@ def format_address_for_link(address_parts):
     
     # Create map app URL (works with Apple Maps, Google Maps, and other map apps)
     return f"maps:q={encoded_address}"
-
-# =============================================================================
-# FORMATTING HELPER FUNCTIONS
-# =============================================================================
 
 def format_currency(value):
     """Format currency values for display"""
@@ -3150,149 +2948,301 @@ def is_dark_map_style(map_style=None):
     return style in [":material/dark_mode:", ":material/satellite_alt:"]
 
 def build_tooltip_sections(business_data):
-    """Build standardized business data sections for tooltips"""
     sections = []
-    
-    # Location Details Section
+
+    # Add DNC warning if INTERNAL_DNC is True
+    dnc_val = business_data.get("INTERNAL_DNC")
+    if dnc_val is True or dnc_val == 1 or (isinstance(dnc_val, str) and dnc_val.strip().lower() in ["true", "1"]):
+        dnc_warning = "<span style='color:red; font-weight:bold; font-size:1.1em;'>🚫 INTERNAL DNC</span>"
+        sections.append(("", [dnc_warning]))
+
+    # ...existing code...
+
     location_items = []
-    
-    # Build address using consolidated helper
+    parent_name_col = "PARENT_NAME"
+    business_name_col = "DBA_NAME"
+    parent_name = str(business_data.get(parent_name_col, '') or '').strip().lower()
+    business_name = str(business_data.get(business_name_col, '') or '').strip().lower()
+    if parent_name_col and is_valid_value(business_data.get(parent_name_col)) and parent_name and parent_name != business_name:
+        location_items.append(
+            f'<span style="font-weight:bold; font-size:1.25em;">🏢 {business_data[parent_name_col]}</span>'
+        )
+
     address_parts = extract_address_parts(business_data)
     if address_parts:
         address_str = ', '.join(address_parts)
         location_items.append(f'📍 {address_str}')
-    
-    if is_valid_value(business_data.get("PHONE")):
-        formatted_phone = format_phone_for_display(business_data["PHONE"])
+
+    phone_col = "PHONE"
+    if phone_col and is_valid_value(business_data.get(phone_col)):
+        formatted_phone = format_phone_for_display(business_data[phone_col])
         if formatted_phone:
             location_items.append(f'📞 {formatted_phone}')
-    
-    if is_valid_value(business_data.get("URL")):
-        formatted_url = format_url(business_data["URL"])
+
+    url_col = "WEBSITE"
+    if url_col and is_valid_value(business_data.get(url_col)):
+        formatted_url = format_url(business_data[url_col])
         if formatted_url:
             location_items.append(f'🌐 {formatted_url}')
-    
+
     if location_items:
         sections.append(('Location Details', location_items))
-    
+
     # Contact Information Section
     contact_items = []
-    if is_valid_value(business_data.get("CONTACT_NAME")):
-        contact_items.append(f'👤 {business_data["CONTACT_NAME"]}')
-    
-    if is_valid_value(business_data.get("CONTACT_PHONE")):
-        formatted_phone = format_phone_for_display(business_data["CONTACT_PHONE"])
+    # Add NATIONAL DNC warning for contact if present, above CONTACT_NAME
+    contact_natl_dnc = business_data.get("CONTACT_NATIONAL_DNC")
+    if contact_natl_dnc is True or contact_natl_dnc == 1 or (isinstance(contact_natl_dnc, str) and contact_natl_dnc.strip().lower() in ["true", "1"]):
+        contact_items.append("<span style='color:red; font-size:.75em;'>🚫 NATIONAL DNC</span>")
+
+    contact_name_col = "CONTACT_NAME"
+    if contact_name_col and is_valid_value(business_data.get(contact_name_col)):
+        contact_items.append(f'👤 {business_data[contact_name_col]}')
+
+    contact_phone_col = "CONTACT_PHONE"
+    if contact_phone_col and is_valid_value(business_data.get(contact_phone_col)):
+        formatted_phone = format_phone_for_display(business_data[contact_phone_col])
         if formatted_phone:
             contact_items.append(f'📞 {formatted_phone}')
-    
-    if is_valid_value(business_data.get("CONTACT_EMAIL")):
-        contact_items.append(f'📧 {business_data["CONTACT_EMAIL"]}')
-    
+
+    contact_mobile_col = "CONTACT_MOBILE"
+    if contact_mobile_col and is_valid_value(business_data.get(contact_mobile_col)):
+        formatted_mobile = format_phone_for_display(business_data[contact_mobile_col])
+        if formatted_mobile:
+            contact_items.append(f'📱 {formatted_mobile}')
+
+    contact_job_title_col = "CONTACT_JOB_TITLE"
+    if contact_job_title_col and is_valid_value(business_data.get(contact_job_title_col)):
+        contact_items.append(f'💼 {business_data[contact_job_title_col]}')
+
+    contact_email_col = "CONTACT_EMAIL"
+    if contact_email_col and is_valid_value(business_data.get(contact_email_col)):
+        contact_items.append(f'📧 {business_data[contact_email_col]}')
+
     if contact_items:
         sections.append(('Contact Information', contact_items))
-    
+
     # Business Metrics Section
     metrics_items = []
-    if is_valid_value(business_data.get("REVENUE")):
+    revenue_col = "REVENUE"
+    if revenue_col and is_valid_value(business_data.get(revenue_col)):
         try:
-            revenue_value = float(business_data["REVENUE"])
+            revenue_value = float(business_data[revenue_col])
             metrics_items.append(f'💵 Revenue: ${revenue_value:,.0f}')
         except (ValueError, TypeError):
             pass
-    
-    if is_valid_value(business_data.get("NUMBER_OF_EMPLOYEES")):
-        metrics_items.append(f'👥 Employees: {business_data["NUMBER_OF_EMPLOYEES"]}')
-    
-    if is_valid_value(business_data.get("NUMBER_OF_LOCATIONS")):
-        metrics_items.append(f'🏢 Locations: {business_data["NUMBER_OF_LOCATIONS"]}')
-    
-    # Add additional business data if available
-    if is_valid_value(business_data.get("PRIMARY_INDUSTRY")):
-        metrics_items.append(f'🏭 Industry: {business_data["PRIMARY_INDUSTRY"]}')
-    
-    if is_valid_value(business_data.get("SIC_CODE")):
-        metrics_items.append(f'📊 SIC Code: {business_data["SIC_CODE"]}')
-    
+
+    employees_col = "NUMBER_OF_EMPLOYEES"
+    if employees_col and is_valid_value(business_data.get(employees_col)):
+        metrics_items.append(f'👥 Employees: {business_data[employees_col]}')
+
+    locations_col = "NUMBER_OF_LOCATIONS"
+    if locations_col and is_valid_value(business_data.get(locations_col)):
+            try:
+                loc_val = int(float(business_data[locations_col]))
+                metrics_items.append(f'🏢 Locations: {loc_val:,}')
+            except (ValueError, TypeError):
+                metrics_items.append(f'🏢 Locations: {business_data[locations_col]}')
+
+    industry_col = "PRIMARY_INDUSTRY"
+    if industry_col and is_valid_value(business_data.get(industry_col)):
+        metrics_items.append(f'🏭 Industry: {business_data[industry_col]}')
+
+    mcc_col = "MCC_CODE"
+    if mcc_col and is_valid_value(business_data.get(mcc_col)):
+        metrics_items.append(f'📊 MCC Code: {business_data[mcc_col]}')
+
     if metrics_items:
         sections.append(('Business Metrics', metrics_items))
-    
+
     return sections
 
 def build_business_card_sections(business_data):
     """Build standardized business data sections for HTML business cards"""
-    
     # Helper function to create metric HTML
     def create_metric(icon, label, value, link=None):
         metric_value = f'<a href="{link}" target="_blank">{value}</a>' if link else value
         return f'<div class="data-metric"><div class="metric-accent"></div><div class="metric-icon">{icon}</div><div class="metric-label">{label}</div><div class="metric-value">{metric_value}</div></div>'
-    
-    # Helper function to create section
+
     def create_section(title, metrics):
         if not metrics:
-            return ""
+            return ''
         return f'<div class="data-viz-section"><div class="section-header">{title}</div><div class="data-viz-grid">{"".join(metrics)}</div></div>'
-    
-    # Location metrics
+
+    parent_metrics = []
+    parent_name_col = "PARENT_NAME"
+    parent_phone_col = "PARENT_PHONE"
+    parent_website_col = "PARENT_WEBSITE"
+    business_name_col = "DBA_NAME"
+    business_phone_col = "PHONE"
+    business_website_col = "WEBSITE"
+
+    parent_name = str(business_data.get(parent_name_col, '') or '').strip().lower()
+    business_name = str(business_data.get(business_name_col, '') or '').strip().lower()
+    parent_phone = str(business_data.get(parent_phone_col, '') or '').strip().lower()
+    business_phone = str(business_data.get(business_phone_col, '') or '').strip().lower()
+    parent_website = str(business_data.get(parent_website_col, '') or '').strip().lower()
+    business_website = str(business_data.get(business_website_col, '') or '').strip().lower()
+
+    parent_info_present = any([
+        is_valid_value(business_data.get(parent_name_col)),
+        is_valid_value(business_data.get(parent_phone_col)),
+        is_valid_value(business_data.get(parent_website_col))
+    ])
+    parent_info_differs = (
+        (parent_name and parent_name != business_name) or
+        (parent_phone and parent_phone != business_phone) or
+        (parent_website and parent_website != business_website)
+    )
+
+    if parent_info_present and parent_info_differs:
+        if parent_name:
+            parent_metrics.append(create_metric('🏢', 'Parent Company', business_data[parent_name_col]))
+        if parent_phone:
+            formatted_parent_phone = format_phone_for_display(business_data[parent_phone_col])
+            parent_phone_link = format_phone_for_link(business_data[parent_phone_col])
+            if formatted_parent_phone:
+                parent_metrics.append(create_metric('📞', 'Parent Phone', formatted_parent_phone, parent_phone_link))
+        if parent_website:
+            formatted_parent_website = format_url(business_data[parent_website_col])
+            if formatted_parent_website:
+                parent_metrics.append(create_metric('🌐', 'Parent Website', formatted_parent_website, formatted_parent_website))
+
     location_metrics = []
     address_parts = extract_address_parts(business_data)
     if address_parts:
         address_str = ', '.join(address_parts)
         address_link = format_address_for_link(address_parts)
         location_metrics.append(create_metric('📍', 'Address', address_str, address_link))
-    
-    if is_valid_value(business_data.get("PHONE")):
-        formatted_phone = format_phone_for_display(business_data["PHONE"])
-        phone_link = format_phone_for_link(business_data["PHONE"])
+
+    phone_col = "PHONE"
+    if phone_col and is_valid_value(business_data.get(phone_col)):
+        formatted_phone = format_phone_for_display(business_data[phone_col])
+        phone_link = format_phone_for_link(business_data[phone_col])
         if formatted_phone:
             location_metrics.append(create_metric('📞', 'Phone', formatted_phone, phone_link))
-    
-    if is_valid_value(business_data.get("URL")):
-        formatted_url = format_url(business_data["URL"])
+
+    url_col = "WEBSITE"
+    if url_col and is_valid_value(business_data.get(url_col)):
+        formatted_url = format_url(business_data[url_col])
         if formatted_url:
             location_metrics.append(create_metric('🌐', 'Website', formatted_url, formatted_url))
-    
-    # Contact metrics
-    contact_metrics = []
-    contact_fields = [
-        ("CONTACT_NAME", "👤", "Contact"),
-        ("CONTACT_EMAIL", "📧", "Email")
-    ]
-    for field, icon, label in contact_fields:
-        if is_valid_value(business_data.get(field)):
-            value = business_data[field]
-            link = f"mailto:{value}" if field == "CONTACT_EMAIL" else None
-            contact_metrics.append(create_metric(icon, label, value, link))
-    
-    if is_valid_value(business_data.get("CONTACT_PHONE")):
-        formatted_phone = format_phone_for_display(business_data["CONTACT_PHONE"])
-        phone_link = format_phone_for_link(business_data["CONTACT_PHONE"])
-        if formatted_phone:
-            contact_metrics.append(create_metric('📞', 'Contact Phone', formatted_phone, phone_link))
-    
+
     # Business metrics
     business_metrics = []
-    if is_valid_value(business_data.get("REVENUE")):
+    revenue_col = "REVENUE"
+    if revenue_col and is_valid_value(business_data.get(revenue_col)):
         try:
-            revenue_value = float(business_data["REVENUE"])
+            revenue_value = float(business_data[revenue_col])
             business_metrics.append(create_metric('💵', 'Annual Revenue', f'${revenue_value:,.0f}'))
         except (ValueError, TypeError):
             pass
-    
+
     metric_fields = [
         ("NUMBER_OF_EMPLOYEES", "👥", "Employees"),
         ("NUMBER_OF_LOCATIONS", "🏢", "Locations")
     ]
-    for field, icon, label in metric_fields:
-        if is_valid_value(business_data.get(field)):
-            business_metrics.append(create_metric(icon, label, business_data[field]))
-    
+    for logical_field, icon, label in metric_fields:
+        # If you need to map logical to actual, do it here, else use logical_field directly
+        logical_to_actual = {"MCC_CODE": "MCC_CODE", "B2B": "IS_B2B", "B2C": "IS_B2C"}
+        actual_col = logical_to_actual.get(logical_field, logical_field)
+        if actual_col and is_valid_value(business_data.get(actual_col)):
+                if actual_col == "NUMBER_OF_LOCATIONS":
+                    try:
+                        loc_val = int(float(business_data[actual_col]))
+                        business_metrics.append(create_metric(icon, label, f"{loc_val:,}"))
+                    except (ValueError, TypeError):
+                        business_metrics.append(create_metric(icon, label, business_data[actual_col]))
+                else:
+                    business_metrics.append(create_metric(icon, label, business_data[actual_col]))
+
     # Return HTML sections
-    sections = [
+    sections = []
+    if parent_metrics:
+        sections.append(create_section("Parent Company", parent_metrics))
+    sections.extend([
         create_section("Location Details", location_metrics),
-        create_section("Contact Information", contact_metrics),
         create_section("Business Metrics", business_metrics)
-    ]
-    
+    ])
+
+    # Add Contact Hierarchy section only if there are contacts in TOP10_CONTACTS
+    import json
+    top_contacts = business_data.get("TOP10_CONTACTS")
+    has_contacts = False
+    contacts_iter = []
+    if top_contacts:
+        contacts_obj = top_contacts
+        if isinstance(top_contacts, str):
+            try:
+                contacts_obj = json.loads(top_contacts)
+            except Exception:
+                contacts_obj = []
+        if (isinstance(contacts_obj, dict) and bool(contacts_obj)):
+            contacts_iter = contacts_obj.values()
+            has_contacts = True
+        elif isinstance(contacts_obj, list) and len(contacts_obj) > 0:
+            contacts_iter = contacts_obj
+            has_contacts = True
+    if has_contacts:
+        def create_contact_header():
+            labels = ["Name", "Job Title", "Direct Phone", "Mobile Phone", "Email", ""]
+            boxes = [
+                f'<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; justify-content:flex-start; font-family: DM Sans, -apple-system, BlinkMacSystemFont, sans-serif; background:#f8faff; font-size:11px; color:#6c7280; font-weight:600; letter-spacing:0.5px; text-transform:uppercase; border-bottom:1px solid #e6e9f3;">{label}</div>'
+                for label in labels
+            ]
+            return f'<div style="display:flex; flex-direction:row; gap:0; width:100%;">' + ''.join(boxes) + '</div>'
+
+        def create_contact_row(contact):
+            name = contact.get('name', '')
+            job_title = contact.get('job_title', '')
+            direct_phone = contact.get('direct_phone_number', '')
+            mobile_phone = contact.get('mobile_phone', '')
+            email = contact.get('email_address', '')
+            # Format phone numbers as clickable links
+            formatted_direct_phone = format_phone_for_display(direct_phone)
+            direct_phone_link = format_phone_for_link(direct_phone)
+
+            link_style = "color:#262AFF; text-decoration:none;"
+            if formatted_direct_phone and direct_phone_link:
+                direct_phone_html = f'<a href="{direct_phone_link}" style="{link_style}">{formatted_direct_phone}</a>'
+            else:
+                direct_phone_html = direct_phone if direct_phone else "&nbsp;"
+
+            formatted_mobile_phone = format_phone_for_display(mobile_phone)
+            mobile_phone_link = format_phone_for_link(mobile_phone)
+            if formatted_mobile_phone and mobile_phone_link:
+                mobile_phone_html = f'<a href="{mobile_phone_link}" style="{link_style}">{formatted_mobile_phone}</a>'
+            else:
+                mobile_phone_html = mobile_phone if mobile_phone else "&nbsp;"
+
+            # Format email as clickable mailto link
+            email_link = format_email_for_link(email)
+            if email_link:
+                email_html = f'<a href="{email_link}" style="{link_style}">{email}</a>'
+            else:
+                email_html = email if email else "&nbsp;"
+
+            # Check for DNC flag
+            is_dnc = contact.get('is_dnc')
+            show_dnc = is_dnc is True or is_dnc == 1 or (isinstance(is_dnc, str) and is_dnc.strip().lower() in ['true', '1'])
+            if show_dnc:
+                dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; justify-content:center; color:red; font-weight:bold; font-size:1em;">🚫 NATIONAL DNC</div>'
+            else:
+                dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center;">&nbsp;</div>'
+            values = [name, job_title, direct_phone_html, mobile_phone_html, email_html]
+            boxes = [
+                f'<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; font-family: DM Sans, -apple-system, BlinkMacSystemFont, sans-serif; font-size:15px; color:#222; font-weight:500;">{value if value else "&nbsp;"}</div>'
+                for value in values
+            ]
+            row_html = f'<div style="display:flex; flex-direction:row; gap:0; width:100%; border-bottom:1px solid #e6e9f3; background:#fff;">' + ''.join(boxes) + dnc_col + '</div>'
+            return row_html
+
+        contact_rows = [create_contact_header()]
+        for contact in contacts_iter:
+            contact_rows.append(create_contact_row(contact))
+        contact_hierarchy_html = f'<div class="data-viz-section"><div class="section-header">Contact Hierarchy</div><div style="display:flex; flex-direction:column; gap:8px;">{"".join(contact_rows)}</div></div>'
+        sections.append(contact_hierarchy_html)
+
     return sections
 
 def create_data_editor_column_config():
@@ -3303,19 +3253,29 @@ def create_data_editor_column_config():
         "SF": st.column_config.CheckboxColumn("SF", help="Check to push to Salesforce", default=False, width="small"),
         
         # Text columns  
-        "Current Customer": st.column_config.TextColumn("Current Customer", help="🔵 = Existing Customer, ⚪ = Prospect", width="small"),
+        "Current Customer": st.column_config.TextColumn("Current Customer", help="🔵 = Existing Customer, ⚪ = Prospect"),
         "FULL_ADDRESS": st.column_config.TextColumn("Full Address", help="Complete address"),
-        "ACCOUNT_ID": st.column_config.TextColumn("Account ID", help="Salesforce Account ID"),
+        "IDENTIFIER": st.column_config.TextColumn("Identifier", help="Identifier"),
+        "CONTACT_NAME": st.column_config.TextColumn("Contact Name", help="Contact Name"),
+        "PRIMARY_INDUSTRY": st.column_config.TextColumn("Primary Industry", help="Primary Industry"),
+        "SUB_INDUSTRY": st.column_config.TextColumn("Sub Industry", help="Identifier"),
+        "MCC_CODE": st.column_config.TextColumn("MCC Code", help="MCC"),
+        "DBA_NAME": st.column_config.TextColumn("DBA Name", help="DBA Name"),
+        "PARENT_NAME": st.column_config.TextColumn("Parent Name", help="Parent Company Name"),
         
         # Link columns
-        "URL": st.column_config.LinkColumn("Website", help="Click to visit website", display_text=BUTTON_LABEL_VISIT_SITE),
+        "WEBSITE": st.column_config.LinkColumn("Website", help="Click to visit website", display_text=BUTTON_LABEL_VISIT_SITE),
         "PHONE": st.column_config.LinkColumn("Phone", help="Click to call", display_text=BUTTON_LABEL_CALL),
         "CONTACT_PHONE": st.column_config.LinkColumn("Contact Phone", help="Click to call", display_text=BUTTON_LABEL_CALL),
+        "CONTACT_MOBILE": st.column_config.LinkColumn("Contact Mobile", help="Click to call", display_text=BUTTON_LABEL_CALL),
+        "CONTACT_JOB_TITLE": st.column_config.TextColumn("Contact Job Title", help="Job title of the contact"),
         "CONTACT_EMAIL": st.column_config.LinkColumn("Contact Email", help="Click to send email", display_text=BUTTON_LABEL_EMAIL),
         "ADDRESS_LINK": st.column_config.LinkColumn("Directions", help="Click to open in Maps app", display_text=BUTTON_LABEL_GET_DIRECTIONS),
+        "PARENT_PHONE": st.column_config.LinkColumn("Parent Phone", help="Click to call parent company", display_text=BUTTON_LABEL_CALL),
+        "PARENT_WEBSITE" : st.column_config.LinkColumn("Parent Website", help="Click to visit parent company website", display_text=BUTTON_LABEL_VISIT_SITE),
         
         # Number columns
-        "REVENUE": st.column_config.NumberColumn("Revenue", help="Annual revenue in USD", format="$%.0f"),
+        "REVENUE": st.column_config.TextColumn("Revenue", help="Annual revenue in USD"),
         "NUMBER_OF_EMPLOYEES": st.column_config.NumberColumn("Employees", help="Number of employees", format="%.0f"),
         "NUMBER_OF_LOCATIONS": st.column_config.NumberColumn("Locations", help="Number of locations", format="%.0f")
     }
@@ -3323,28 +3283,27 @@ def create_data_editor_column_config():
 def get_disabled_columns():
     """Get list of columns that should be disabled in data editor"""
     return [
-        "DBA_NAME", "FULL_ADDRESS", "PHONE", "URL", "ACCOUNT_ID", "Current Customer", 
+        "DBA_NAME", "FULL_ADDRESS", "PHONE", "WEBSITE", "IDENTIFIER", "Current Customer", 
         "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "PRIMARY_INDUSTRY", 
-        "SUB_INDUSTRY", "SIC_CODE", "REVENUE", "NUMBER_OF_EMPLOYEES", 
-        "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C"
+        "SUB_INDUSTRY", "MCC_CODE", "REVENUE", "NUMBER_OF_EMPLOYEES", 
+        "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C", 
+        "TOP10_CONTACTS", "CONTACT_NATIONAL_DNC", "INTERNAL_DNC"
     ]
 
-def get_dataframe_format_config():
-    """Get standardized formatting configuration for styled dataframes"""
-    return {
-        "REVENUE": format_currency,
-        "NUMBER_OF_EMPLOYEES": format_number,
-        "NUMBER_OF_LOCATIONS": format_number,
-        "ZIP": format_zip,
-        "PHONE": format_phone,
-        "CONTACT_PHONE": format_phone,
-        "CONTACT_NAME": format_contact_name
-    }
-
-
-# =============================================================================
-# PAGINATION HELPER FUNCTIONS
-# =============================================================================
+# def get_dataframe_format_config():
+#     """Get standardized formatting configuration for styled dataframes"""
+#     return {
+#         "REVENUE": format_currency,
+#         "NUMBER_OF_EMPLOYEES": format_number,
+#         "NUMBER_OF_LOCATIONS": format_number,
+#         "ZIP": format_zip,
+#         "PHONE": format_phone,
+#         "CONTACT_PHONE": format_phone,
+#         "CONTACT_NAME": format_contact_name,
+#         "CONTACT_MOBILE": format_phone,
+#         "PARENT_PHONE": format_phone,
+#        
+#    }
 
 def calculate_pagination_values(total_records, page_size, current_page):
     """Calculate pagination values including total pages, start/end indices, and validated current page"""
@@ -3362,7 +3321,7 @@ def calculate_pagination_values(total_records, page_size, current_page):
 
 def reset_to_first_page():
     """Reset pagination to first page"""
-    st.session_state.current_page = 1
+    st.session_state["current_page"] = 1
 
 def calculate_sql_offset(current_page, page_size):
     """Calculate SQL OFFSET value for pagination"""
@@ -3381,11 +3340,11 @@ def update_filter_triggers(columns_to_update, exclude_column=None):
     """Update filter triggers for specified columns"""
     for col in columns_to_update:
         if exclude_column is None or col != exclude_column:
-            st.session_state.filter_update_trigger[col] += 1
+            st.session_state["filter_update_trigger"][col] += 1
 
 def refresh_data_editor_and_rerun():
     """Refresh data editor and trigger rerun"""
-    st.session_state.data_editor_refresh_counter += 1
+    st.session_state["data_editor_refresh_counter"] += 1
     st.rerun()
 
 def create_html_wrapper(tag, css_class, content="", close_tag=True):
@@ -3414,12 +3373,12 @@ def create_page_size_selector():
     new_page_size = st.selectbox(
         "Show",
         options=PAGE_SIZE_OPTIONS,
-        index=PAGE_SIZE_OPTIONS.index(st.session_state.page_size),
+        index=PAGE_SIZE_OPTIONS.index(st.session_state["page_size"]),
         key="page_size_selector",
         label_visibility="visible"
     )
-    if new_page_size != st.session_state.page_size:
-        st.session_state.page_size = new_page_size
+    if new_page_size != st.session_state["page_size"]:
+        st.session_state["page_size"] = new_page_size
         reset_to_first_page()
         # Force data editor refresh but don't fetch new data - it's already loaded
         refresh_data_editor_and_rerun()
@@ -3430,11 +3389,11 @@ def create_page_selector(total_pages):
     new_page = st.selectbox(
         "Page",
         options=page_options,
-        index=st.session_state.current_page - 1,
+        index=st.session_state["current_page"] - 1,
         key="page_selector"
     )
-    if new_page != st.session_state.current_page:
-        st.session_state.current_page = new_page
+    if new_page != st.session_state["current_page"]:
+        st.session_state["current_page"] = new_page
         # Force data editor refresh but don't fetch new data - it's already loaded
         refresh_data_editor_and_rerun()
 
@@ -3442,20 +3401,20 @@ def create_pagination_navigation_buttons(total_pages):
     """Create and handle pagination navigation buttons (Previous/Next)"""
     btn_col1, btn_col2 = create_equal_columns()
     with btn_col1:
-        if st.button(":material/skip_previous:", disabled=st.session_state.current_page == 1, key="prev_page", use_container_width=True, help="Previous page"):
-            st.session_state.current_page -= 1
-            # Force data editor refresh but don't fetch new data - it's already loaded
+        if st.button(":material/skip_previous:", disabled=st.session_state["current_page"] == 1, key="prev_page", use_container_width=True, help="Previous page"):
+            st.session_state["current_page"] -= 1
+            # Force data editor refresh but don't fetch new data
             refresh_data_editor_and_rerun()
     with btn_col2:
-        if st.button(":material/skip_next:", disabled=bool(st.session_state.current_page == total_pages), key="next_page", use_container_width=True, help="Next page"):
-            st.session_state.current_page += 1
-            # Force data editor refresh but don't fetch new data - it's already loaded
+        if st.button(":material/skip_next:", disabled=bool(st.session_state["current_page"] == total_pages), key="next_page", use_container_width=True, help="Next page"):
+            st.session_state["current_page"] += 1
+            # Force data editor refresh but don't fetch new data
             refresh_data_editor_and_rerun()
 
 def display_pagination_status(start_idx, end_idx, total_records, total_pages):
     """Display pagination status information"""
     display_html_wrapper("div", "pagination-status")
-    st.caption(f"Viewing {start_idx + 1}–{end_idx} of {total_records} records (Page {st.session_state.current_page} of {total_pages})")
+    st.caption(f"Viewing {start_idx + 1}–{end_idx} of {total_records} records (Page {st.session_state['current_page']} of {total_pages})")
     close_html_wrapper("div")
 
 def create_complete_pagination_ui(total_records, total_pages, start_idx, end_idx):
@@ -3471,9 +3430,7 @@ def create_complete_pagination_ui(total_records, total_pages, start_idx, end_idx
             create_page_size_selector()
         with sub_col2:
             create_page_selector(total_pages)
-        close_html_wrapper("div")
-    
-    # Right side - Previous and Next buttons grouped together  
+        close_html_wrapper("div") 
     with col_right:
         display_html_wrapper("div", "pagination-nav-buttons")
         create_pagination_navigation_buttons(total_pages)
@@ -3481,10 +3438,6 @@ def create_complete_pagination_ui(total_records, total_pages, start_idx, end_idx
     
     display_pagination_status(start_idx, end_idx, total_records, total_pages)
     close_html_wrapper("div")  # Close page-navigation-container
-
-# =============================================================================
-# STYLING HELPER FUNCTIONS
-# =============================================================================
 
 def create_tooltip_style(is_dark_map=False):
     """Generate tooltip styling based on map theme - light tooltip for dark maps, dark tooltip for light maps"""
@@ -3547,11 +3500,6 @@ def create_tooltip_header_style(is_dark_map=False):
             align-items: center;
             gap: 6px;
         """
-
-# =============================================================================
-# LAYOUT HELPER FUNCTIONS 
-# =============================================================================
-
 def create_two_column_layout(ratio=[1, 1]):
     """Create a two-column layout with specified ratio"""
     return st.columns(ratio)
@@ -3611,7 +3559,6 @@ def validate_query_params(query, params, operation_name="query"):
         if placeholder_count != len(params):
             error_msg = f"Parameter mismatch for {operation_name}: {placeholder_count} placeholders, {len(params)} parameters"
             st.error(error_msg)
-            logger.error(error_msg)
             return False
     return True
 
@@ -3619,9 +3566,7 @@ def execute_sql_query(query, params=None, operation_name="query", return_single_
     """Execute SQL query and return pandas DataFrame or single value"""
     try:
         session = get_active_session()
-        logger.info(f"{operation_name} query: {query}")
         if params:
-            logger.info(f"{operation_name} params: {params}")
             result = session.sql(query, params=params)
         else:
             result = session.sql(query)
@@ -3637,20 +3582,16 @@ def execute_sql_query(query, params=None, operation_name="query", return_single_
         else:
             error_msg += f"\nQuery: {query}"
         st.error(error_msg)
-        logger.error(error_msg)
         return pd.DataFrame() if not return_single_value else 0
 
 def execute_sql_command(query, params=None, operation_name="command"):
     """Execute SQL command (INSERT/UPDATE/DELETE) and return result"""
     try:
         session = get_active_session()
-        logger.info(f"{operation_name} query: {query}")
         if params:
-            logger.info(f"{operation_name} params: {params}")
             result = session.sql(query, params=params).collect()
         else:
             result = session.sql(query).collect()
-        logger.info(f"{operation_name} executed successfully")
         return result
     except Exception as e:
         error_msg = f"Error in {operation_name}: {str(e)}"
@@ -3659,8 +3600,50 @@ def execute_sql_command(query, params=None, operation_name="command"):
         else:
             error_msg += f"\nQuery: {query}"
         st.error(error_msg)
-        logger.error(error_msg)
         return []
+
+def geocode_address(address_or_zip):
+    """
+    Convert an address or ZIP code to latitude/longitude coordinates using Snowflake UDF.
+    Returns dict with 'latitude' and 'longitude' keys, or None if geocoding fails.
+    Uses session state cache to avoid repeated geocoding of the same address.
+    """
+    try:
+        if not address_or_zip or not address_or_zip.strip():
+            return None
+        
+        # Normalize the address for cache lookup
+        normalized_address = address_or_zip.strip().lower()
+        
+        # Check cache first
+        if "geocode_cache" not in st.session_state:
+            st.session_state["geocode_cache"] = {}
+        
+        if normalized_address in st.session_state["geocode_cache"]:
+            return st.session_state["geocode_cache"][normalized_address]
+            
+        # Call your Snowflake UDF - REPLACE 'YOUR_GEOCODING_UDF' with the actual UDF name
+        # Example: query = "SELECT GEOCODE_ADDRESS(?) AS geocode_result"
+        query = "SELECT python_workloads.data_engineering.geocode_address(?) AS geocode_result"
+        result = execute_sql_query(query, params=[address_or_zip.strip()], operation_name="geocode_address", return_single_value=True)
+        
+        geocode_result = None
+        if result:
+            # Parse the JSON result
+            geocode_data = json.loads(result) if isinstance(result, str) else result
+            if isinstance(geocode_data, dict) and 'latitude' in geocode_data and 'longitude' in geocode_data:
+                geocode_result = {
+                    'latitude': float(geocode_data['latitude']),
+                    'longitude': float(geocode_data['longitude'])
+                }
+        
+        # Cache the result (even if None to avoid repeated failed attempts)
+        st.session_state["geocode_cache"][normalized_address] = geocode_result
+        return geocode_result
+        
+    except Exception as e:
+        st.warning(f"Geocoding failed for '{address_or_zip}': {str(e)}")
+        return None
 
 def show_error_message(message, details=None, log_error=True):
     """Display error message with optional details and logging"""
@@ -3670,24 +3653,33 @@ def show_error_message(message, details=None, log_error=True):
         full_message = message
     
     st.error(full_message)
+
     
+
     if log_error:
-        logger.error(full_message)
+        pass
 
 def show_success_message(message, log_success=True):
     """Display success message with optional logging"""
     st.success(message)
     
+
     if log_success:
-        logger.info(message)
+        pass
 
 def has_active_filters(filters):
     """Check if any filters are active/non-empty"""
+    # Check for location address which is the main location filter
+    if filters.get("LOCATION_ADDRESS", "").strip():
+        return True
+    
     return any(
         (STATIC_FILTERS[k]["type"] == "dropdown" and v != []) or
         (STATIC_FILTERS[k]["type"] == "range" and v != [None, None]) or
         (STATIC_FILTERS[k]["type"] == "checkbox" and v) or
-        (STATIC_FILTERS[k]["type"] == "text" and v.strip())
+        (STATIC_FILTERS[k]["type"] == "selectbox" and v != STATIC_FILTERS[k].get("options", [""])[0]) or
+        (STATIC_FILTERS[k]["type"] == "text" and v.strip()) or
+        (STATIC_FILTERS[k]["type"] == "number" and v != STATIC_FILTERS[k].get("default"))
         for k, v in filters.items()
         if k in STATIC_FILTERS
     )
@@ -3704,8 +3696,12 @@ def is_filter_active(filter_key, filter_value):
         return filter_value != [None, None]
     elif filter_type == "checkbox":
         return bool(filter_value)
+    elif filter_type == "selectbox":
+        return filter_value != STATIC_FILTERS[filter_key].get("options", [""])[0]
     elif filter_type == "text":
         return bool(filter_value.strip() if isinstance(filter_value, str) else filter_value)
+    elif filter_type == "number":
+        return filter_value != STATIC_FILTERS[filter_key].get("default")
     return False
 
 def get_filters_by_type(filter_type):
@@ -3731,26 +3727,26 @@ def create_map_style_button(icon, key, help_text, current_style, column):
             help=help_text,
             type="primary" if current_style == icon else "secondary"
         ):
-            st.session_state.map_style_selector = icon
+            st.session_state["map_style_selector"] = icon
             st.rerun()
 
 def adjust_radius_scale(scale_factor, min_value=0.0001, max_value=10.0):
     """Adjust radius scale for selected or initial radius"""
-    if st.session_state.selected_business_indices:
-        current_scale = st.session_state.selected_radius_scale
+    if st.session_state["selected_business_indices"]:
+        current_scale = st.session_state["selected_radius_scale"]
         new_scale = max(min_value, min(max_value, current_scale * scale_factor))
-        st.session_state.selected_radius_scale = new_scale
+        st.session_state["selected_radius_scale"] = new_scale
     else:
-        current_scale = st.session_state.initial_radius_scale
+        current_scale = st.session_state["initial_radius_scale"]
         new_scale = max(min_value, min(max_value, current_scale * scale_factor))
-        st.session_state.initial_radius_scale = new_scale
+        st.session_state["initial_radius_scale"] = new_scale
 
 def reset_radius_scale():
     """Reset radius scale to default values"""
-    if st.session_state.selected_business_indices:
-        st.session_state.selected_radius_scale = st.session_state.default_selected_radius_scale
+    if st.session_state["selected_business_indices"]:
+        st.session_state["selected_radius_scale"] = st.session_state["default_selected_radius_scale"]
     else:
-        st.session_state.initial_radius_scale = 1.0
+        st.session_state["initial_radius_scale"] = 1.0
 
 def apply_gradient_class(element_class, gradient_type="primary"):
     """Apply gradient class to elements via CSS injection"""
@@ -3771,64 +3767,10 @@ def apply_gradient_class(element_class, gradient_type="primary"):
         </style>
     """, unsafe_allow_html=True)
 
-# =============================================================================
-# MAIN APPLICATION
-# =============================================================================
-
 def main():
-    # Ensure cortex_warnings is always initialized
-    if "cortex_warnings" not in st.session_state:
-        st.session_state.cortex_warnings = []
-    # Ensure cortex_messages is always initialized
-    if "cortex_messages" not in st.session_state:
-        st.session_state.cortex_messages = []
-
-    # Main application entry point and UI orchestration.
-    
-    # This function coordinates the entire application flow:
-    # 1. Creates sidebar filters and captures user input
-    # 2. Displays filter summary to show current search criteria
-    # 3. Manages Salesforce integration state
-    # 4. Renders three main tabs: List View, Map View, and Salesforce
-    # 5. Handles data fetching, pagination, and user interactions
-    
-    # The function uses Streamlit's tab system to organize different views of the data:
-    # - List View: Paginated table with business details and Salesforce integration
-    # - Map View: Interactive map showing business locations with selection capabilities  
-    # - Salesforce: Integration status and configuration interface
-    
-    # Side Effects:
-    #     - Updates session state based on user interactions
-    #     - Fetches data from Snowflake when filters are applied
-    #     - Renders the complete application UI
-    #     - Manages map interactions and business selection
-
     filters, apply_filters = create_sidebar_filters()
 
-    # --- Cortex Analyst Integration: Run model for sidebar prompt and store results for all views ---
-    # (Move this logic before filter summary so filtered_df is updated before summary is displayed)
-    CORTEX_MODEL_PATH = "SANDBOX.CONKLIN.CORTEX_ANALYST_PROSPECTOR/lead_portal.yaml"
-    API_ENDPOINT = "/api/v2/cortex/analyst/message"
-    API_TIMEOUT = 50000
-    session = get_active_session()
-
-    sidebar_prompt = st.session_state.get("sidebar_cortex_prompt", "")
-    if run_analyst and sidebar_prompt:
-        st.session_state.analyst_running = True
-        st.rerun()
-    if st.session_state.get("analyst_running", False):
-        with st.spinner("Running Analyst..."):
-            run_cortex_analyst(
-                sidebar_prompt,
-                session,
-                _snowflake,
-                CORTEX_MODEL_PATH,
-                API_ENDPOINT,
-                API_TIMEOUT,
-                rerun_on_success=True
-            )
-
-    display_filter_summary(st.session_state.active_filters)
+    display_filter_summary(st.session_state["active_filters"])
     
     # Ensure sf_business_ids is initialized
     init_session_state_key("sf_business_ids", [])
@@ -3840,91 +3782,46 @@ def main():
     init_session_state_key("sf_last_update", datetime.now().isoformat())
     
     tab1, tab2, tab3 = st.tabs(["List View", "Map View", "Salesforce"])
-    # --- Cortex Analyst Integration: Run model for sidebar prompt and store results for all views ---
-    # (already handled above)
 
-    # Cortex Analyst Tab removed. Results will be shown only in the List View data editor.
-    # Only fetch data and reset to page 1 when filters are explicitly applied via button
-    # If sidebar prompt is present and Cortex Analyst returned SQL, use its results for List/Map View
-    cortex_df = None
-    cortex_total_records = 0
-    sidebar_prompt = st.session_state.get("sidebar_cortex_prompt", "")
-    if sidebar_prompt and "cortex_messages" in st.session_state:
-        # Find the latest analyst message with SQL
-        for msg in reversed(st.session_state.cortex_messages):
-            if msg.get("role") == "analyst":
-                for item in msg.get("content", []):
-                    if item.get("type") == "sql" and "statement" in item:
-                        # Intercept and rewrite SQL to always select all fields for simple queries
-                        original_sql = item["statement"]
-                        import re
-                        # Only rewrite if the query is a simple SELECT from a table (no subqueries, no calculated columns)
-                        simple_select_pattern = r"^\s*SELECT\s+([\w,\s]+)\s+FROM\s+([\w\.]+)"  # e.g. SELECT col1, col2 FROM table
-                        if re.match(simple_select_pattern, original_sql, flags=re.IGNORECASE):
-                            rewritten_sql = re.sub(r"SELECT\s+.+?\s+FROM", "SELECT * FROM", original_sql, flags=re.IGNORECASE|re.DOTALL)
-                        else:
-                            rewritten_sql = original_sql
-                        try:
-                            cortex_df = session.sql(rewritten_sql).to_pandas()
-                            cortex_total_records = len(cortex_df)
-                        except Exception as e:
-                            st.error(f"Error executing Cortex SQL for List/Map View: {e}")
-                        break
-                if cortex_df is not None:
-                    break
-    if cortex_df is not None:
-        st.session_state.filtered_df = cortex_df
-        st.session_state.total_records = cortex_total_records
-    elif apply_filters and has_active_filters(filters):
+    if apply_filters and has_active_filters(filters):
         def fetch_data():
             cache_key = create_cache_key("filtered_data", filters)
             reset_to_first_page()
             return fetch_filtered_data(
-                filters, cache_key, st.session_state.page_size, st.session_state.current_page, fetch_all=True
+                filters, cache_key, st.session_state["page_size"], st.session_state["current_page"], fetch_all=True
             )
-        st.session_state.filtered_df, st.session_state.total_records = with_loading_spinner(
+        st.session_state["filtered_df"], st.session_state["total_records"] = with_loading_spinner(
             "Fetching data...", fetch_data
         )
         if "map_view_state" in st.session_state:
             del st.session_state.map_view_state
         if "point_selector" in st.session_state:
             del st.session_state.point_selector
-        st.session_state.radius_scale = 1.0
-        st.session_state.search_name = ""
-        st.session_state.selected_search = ""
-        if len(st.session_state.filtered_df) == st.session_state.page_size and st.session_state.total_records >= MAX_RESULTS:
+        st.session_state["radius_scale"] = 1.0
+        st.session_state["search_name"] = ""
+        st.session_state["selected_search"] = ""
+        if len(st.session_state["filtered_df"]) == st.session_state["page_size"] and st.session_state["total_records"] >= MAX_RESULTS:
             st.warning(f"Result set limited to {MAX_RESULTS} rows. Refine filters to see more specific results.")
         st.rerun()
     with tab1:
         # Unified List View: always use filtered_df and total_records
         show_df = st.session_state.get('filtered_df', None)
         show_total = st.session_state.get('total_records', 0)
-        # --- Normalize columns and format for analyst and filter results ---
+        # --- Normalize columns and format for filter results ---
         if show_df is not None and not show_df.empty:
             # Drop unnecessary columns but keep address fields for now
-            display_df = show_df.copy().drop(columns=['LONGITUDE', 'LATITUDE'], errors='ignore')
+            display_df = show_df.copy()
             # Add missing columns if not present
             for col in [
                 "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
-                "PHONE", "URL", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE",
-                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE", "REVENUE",
-                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C"
+                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE",
+                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "REVENUE",
+                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE"
             ]:
                 if col not in display_df.columns:
                     display_df[col] = ""  # Add empty column
-            # Initialize Map and SF columns with their default states
             display_df['Map'] = True
             display_df['SF'] = False
-            # Create Current Customer column based on ACCOUNT_ID field
-            if 'ACCOUNT_ID' in display_df.columns:
-                display_df['Current Customer'] = display_df['ACCOUNT_ID'].apply(
-                    lambda x: "🔵" if (pd.notna(x) and str(x).strip() != '' and str(x).strip().lower() != 'nan') else "⚪"
-                )
-            else:
-                display_df['Current Customer'] = "⚪"
-            # Format URLs to ensure they are absolute URLs
-            if 'URL' in display_df.columns:
-                display_df['URL'] = display_df['URL'].apply(format_url)
             # Create a combined address column for Google Maps links
             address_cols = ['ADDRESS', 'CITY', 'STATE', 'ZIP']
             if all(col in display_df.columns for col in address_cols):
@@ -3935,24 +3832,28 @@ def main():
                 display_df['PHONE'] = display_df['PHONE'].apply(format_phone_for_link)
             if 'CONTACT_PHONE' in display_df.columns:
                 display_df['CONTACT_PHONE'] = display_df['CONTACT_PHONE'].apply(format_phone_for_link)
+            if 'CONTACT_MOBILE' in display_df.columns:
+                display_df['CONTACT_MOBILE'] = display_df['CONTACT_MOBILE'].apply(format_phone_for_link)
             # Format email addresses for clickable mailto: links
             if 'CONTACT_EMAIL' in display_df.columns:
                 display_df['CONTACT_EMAIL'] = display_df['CONTACT_EMAIL'].apply(format_email_for_link)
+            if 'PARENT_PHONE' in display_df.columns:
+                display_df['PARENT_PHONE'] = display_df['PARENT_PHONE'].apply(format_phone_for_link)
             # Reorder columns to match sidebar filter output
             column_order = [
                 "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
-                "PHONE", "URL", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE",
-                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE", "REVENUE",
-                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C"
+                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE",
+                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "REVENUE",
+                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C"
             ]
             display_df = display_df[column_order]
-            # --- End normalization ---
+
             if "limit_warning" in st.session_state:
                 st.warning(st.session_state.limit_warning)
             total_records = show_total
             pagination_values = calculate_pagination_values(total_records, st.session_state.page_size, st.session_state.current_page)
             total_pages = pagination_values['total_pages']
-            # Ensure current_page is an integer
+
             if not isinstance(st.session_state.current_page, int):
                 show_error_message(f"Invalid current_page type: {type(st.session_state.current_page)} - {st.session_state.current_page}")
                 reset_to_first_page()
@@ -3962,12 +3863,12 @@ def main():
             rows_to_display = min(st.session_state.page_size, total_records - start_idx)
             display_df = display_df.iloc[start_idx:end_idx]
             if rows_to_display < st.session_state.page_size:
-                # Size for actual number of rows when less than page size
+
                 height_for_rows = rows_to_display
                 min_rows = MIN_DISPLAY_ROWS  # Minimum height for at least 2 rows even if fewer results
                 effective_rows = max(height_for_rows, min_rows)
             else:
-                # Size for default page size when we have full page
+
                 effective_rows = st.session_state.page_size
             
             # Calculate dataframe height with minimal buffer
@@ -3979,39 +3880,34 @@ def main():
             min_height = (MIN_DISPLAY_ROWS * ROW_HEIGHT) + header_buffer  # Minimum for 2 rows
             max_height = MAX_DATAFRAME_HEIGHT  # Reduced maximum height
             dataframe_height = max(min_height, min(total_height, max_height))
-            # Drop unnecessary columns but keep address fields for now
-            display_df = show_df.iloc[start_idx:end_idx].drop(columns=['LONGITUDE', 'LATITUDE'], errors='ignore')
+            display_df = show_df.iloc[start_idx:end_idx]
             
             # Update column order to use FULL_ADDRESS and exclude individual address fields
             column_order = [
                 "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
-                "PHONE", "URL", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE",
-                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "SIC_CODE", "REVENUE",
-                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C"
+                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE",
+                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "REVENUE",
+                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C"
             ]
             
             # Initialize Map and SF columns with their default states
             page_key = f"page_{st.session_state.current_page}_size_{st.session_state.page_size}"
-            
-            # Simple approach - set defaults and let data editor handle its own state
             display_df['Map'] = True  # Default value for Map column
             display_df['SF'] = False  # Default value for SF column
             
-            # Create Current Customer column based on ACCOUNT_ID field
-            if 'ACCOUNT_ID' in display_df.columns:
-                # Create visual indicators: blue circle for customers, empty circle for prospects
-                display_df['Current Customer'] = display_df['ACCOUNT_ID'].apply(
-                    lambda x: "🔵" if (pd.notna(x) and str(x).strip() != '' and str(x).strip().lower() != 'nan') else "⚪"
+            # Create Current Customer column based on IS_CURRENT_CUSTOMER field
+            if 'IS_CURRENT_CUSTOMER' in display_df.columns:
+                display_df['Current Customer'] = display_df['IS_CURRENT_CUSTOMER'].apply(
+                    lambda x: "🔵" if x is True or x == True else "⚪"
                 )
             else:
-                # If ACCOUNT_ID doesn't exist, assume all are prospects (empty circle)
                 display_df['Current Customer'] = "⚪"
-            
-            # We'll set the final column order after adding all our custom columns
-            
+            display_df = display_df.drop(columns=['LONGITUDE', 'LATITUDE', 'IS_CURRENT_CUSTOMER'], errors='ignore')            
             # Format URLs to ensure they are absolute URLs
-            if 'URL' in display_df.columns:
-                display_df['URL'] = display_df['URL'].apply(format_url)
+            if 'WEBSITE' in display_df.columns:
+                display_df['WEBSITE'] = display_df['WEBSITE'].apply(format_url)
+            if 'PARENT_WEBSITE' in display_df.columns:
+                display_df['PARENT_WEBSITE'] = display_df['PARENT_WEBSITE'].apply(format_url)
             
             # Create a combined address column for Google Maps links
             address_cols = ['ADDRESS', 'CITY', 'STATE', 'ZIP']
@@ -4034,14 +3930,14 @@ def main():
                             ordered_cols.append(col)
                             cols.remove(col)
                     
-                    # Add URL directly (not after ACCOUNT_ID anymore)
-                    if "URL" in cols:
-                        ordered_cols.append("URL")
-                        cols.remove("URL")
+                    # Add WEBSITE directly (not after identifier)
+                    if "WEBSITE" in cols:
+                        ordered_cols.append("WEBSITE")
+                        cols.remove("WEBSITE")
                     
-                    # Remove ACCOUNT_ID from the columns list to add it at the end
-                    if "ACCOUNT_ID" in cols:
-                        cols.remove("ACCOUNT_ID")
+                    # Remove identifier from the columns list to add it at the end
+                    if "IDENTIFIER" in cols:
+                        cols.remove("IDENTIFIER")
                     
                     # Remove individual address columns
                     for addr_col in ['ADDRESS', 'CITY', 'STATE', 'ZIP']:
@@ -4051,9 +3947,9 @@ def main():
                     # Add remaining columns
                     ordered_cols.extend(cols)
                     
-                    # Add ACCOUNT_ID at the very end
-                    if "ACCOUNT_ID" in display_df.columns:
-                        ordered_cols.append("ACCOUNT_ID")
+                    # Add identifier at the very end
+                    if "IDENTIFIER" in display_df.columns:
+                        ordered_cols.append("IDENTIFIER")
                     
                     # Apply the new order
                     display_df = display_df[ordered_cols]
@@ -4063,18 +3959,20 @@ def main():
                 display_df['PHONE'] = display_df['PHONE'].apply(format_phone_for_link)
             if 'CONTACT_PHONE' in display_df.columns:
                 display_df['CONTACT_PHONE'] = display_df['CONTACT_PHONE'].apply(format_phone_for_link)
-            
+            if 'CONTACT_MOBILE' in display_df.columns:
+                display_df['CONTACT_MOBILE'] = display_df['CONTACT_MOBILE'].apply(format_phone_for_link)
             # Format email addresses for clickable mailto: links
             if 'CONTACT_EMAIL' in display_df.columns:
                 display_df['CONTACT_EMAIL'] = display_df['CONTACT_EMAIL'].apply(format_email_for_link)
+            if 'PARENT_PHONE' in display_df.columns:
+                display_df['PARENT_PHONE'] = display_df['PARENT_PHONE'].apply(format_phone_for_link)
             
-            styled_df = display_df.style.format(get_dataframe_format_config())
-            # Global Payments Bento-style data visualization styling
+            styled_df = display_df#.style.format(get_dataframe_format_config())
             def apply_gp_branding(row):
                 """Apply Global Payments bento-style soft UI design with rounded corners and brand colors"""
                 styles = []
                 
-                # Base styling with soft shapes and rounded corners (GP brand principle)
+                # Base styling with soft shapes and rounded corners
                 base_style = (
                     'background: linear-gradient(135deg, #ffffff 0%, #f8f9ff 100%); '
                     'border: 1px solid #e6e9f3; '
@@ -4085,8 +3983,7 @@ def main():
                     'font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif; '
                     'transition: all 0.2s ease;'
                 )
-                
-                # Alternating bento grid pattern with soft backgrounds
+
                 if row.name % 2 == 0:
                     # Even rows - lighter Global Blue tint
                     bg_gradient = 'background: linear-gradient(135deg, #f6f8ff 0%, #ffffff 100%);'
@@ -4137,10 +4034,8 @@ def main():
                 
                 return styles
             
-            # Apply the Global Payments bento-style design
             styled_df = styled_df.apply(apply_gp_branding, axis=1)
-            
-            # Add Global Payments data visualization CSS styling
+
             st.markdown("""
                 <style>
                 /* Global Payments Data Visualization Styling - Consolidated */
@@ -4305,6 +4200,9 @@ def main():
                 
                 # Display the data editor without any callbacks
                 # Let Streamlit handle the state naturally
+                # Pre-format REVENUE column for display with commas and dollar sign
+                if "REVENUE" in display_df.columns:
+                    display_df["REVENUE"] = display_df["REVENUE"].apply(lambda x: f"${int(x):,}" if pd.notnull(x) else "-")
                 edited_df = st.data_editor(
                     display_df,
                     use_container_width=True,
@@ -4393,15 +4291,29 @@ def main():
                         st.session_state.active_filters, cache_key, st.session_state.page_size, 1, fetch_all=True
                     )
                     return map_df, total_records
-                
+
                 map_df, total_records = with_loading_spinner("Fetching all data for map...", fetch_map_data)
-                map_data = map_df[[lat_col, lon_col, "DBA_NAME", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "REVENUE", "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "URL", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE"]].dropna(subset=[lat_col, lon_col])
+                # Logical columns to display on the map
+                logical_cols = [
+                    "DBA_NAME", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "REVENUE",
+                    "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "WEBSITE", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE",
+                    "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE", "DATA_AGG_UID", 
+                    "IS_CURRENT_CUSTOMER", "TOP10_CONTACTS", "INTERNAL_DNC", "CONTACT_NATIONAL_DNC"
+                ]
+                # Always include lat/lon columns
+                all_logical_cols = [lat_col, lon_col] + logical_cols
+                # Map logical to actual column names, skipping any that are None
+                logical_to_actual = {"MCC_CODE": "MCC_CODE", "B2B": "IS_B2B", "B2C": "IS_B2C"}
+                actual_cols = [logical_to_actual.get(col, col) for col in all_logical_cols if col is not None]
+                # Only keep columns that exist in the DataFrame
+                existing_cols = [col for col in actual_cols if col in map_df.columns]
+                map_data = map_df[existing_cols].dropna(subset=[lat_col, lon_col])
                 map_data = map_data.rename(columns={lat_col: "lat", lon_col: "lon"})
                 map_data = map_data[
                     (map_data["lat"].between(-90, 90)) &
                     (map_data["lon"].between(-180, 180))
                 ]
-                
+
                 # Filter map data based on selected businesses from list view
                 if hasattr(st.session_state, 'selected_map_businesses'):
                     # User has interacted with the list view checkboxes
@@ -4427,30 +4339,31 @@ def main():
                         # Use helper functions for styling
                         tooltip_style = create_tooltip_style(is_dark_map)
                         header_style = create_tooltip_header_style(is_dark_map)
-                        
+
                         # Build sections with proper data validation (same logic as selected business card)
                         sections = build_tooltip_sections(row)
-                        
+
                         # Generate tooltip content with consolidated styling
                         content_html = ""
                         for section_title, items in sections:
                             if items:
-                                items_html = "".join(f"<div style='display: flex; align-items: center; gap: 6px; margin-bottom: 2px;'><span style='font-size: 10px;'>{item}</span></div>" for item in items)
+                                items_html = "".join(f"<div style='display: flex; align-items: center; gap: 10px; margin-bottom: 6px;'><span style='font-size: 16px;'>{item}</span></div>" for item in items)
                                 section_color = "#81c5f4" if is_dark_map else "#4da8da"
                                 content_html += f"""
-                                    <div style='margin-bottom: 8px;'>
-                                        <div style='color: {section_color}; font-weight: 600; font-size: 9px; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;'>{section_title}</div>
+                                    <div style='margin-bottom: 16px;'>
+                                        <div style='color: {section_color}; font-weight: 700; font-size: 15px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;'>{section_title}</div>
                                         {items_html}
                                     </div>
                                 """
-                        
+
+                        # Larger tooltip container and header
                         return f"""
-                            <div style='{tooltip_style}'>
-                                <div style='{header_style}'>
-                                    <span style='background: rgba(255, 255, 255, 0.2); width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 10px;'>🏢</span>
-                                    <span style='font-size: 12px; font-weight: 600; line-height: 1.2;'>{row['DBA_NAME']}</span>
+                            <div style='{tooltip_style}; min-width: 340px; max-width: 480px; padding: 18px 22px; font-size: 16px;'>
+                                <div style='{header_style}; padding-bottom: 10px;'>
+                                    <span style='background: rgba(255, 255, 255, 0.2); width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; font-size: 22px;'>🏢</span>
+                                    <span style='font-size: 22px; font-weight: 700; line-height: 1.2; margin-left: 10px;'>{row['DBA_NAME']}</span>
                                 </div>
-                                <div style='padding: 2px 0;'>
+                                <div style='padding: 6px 0;'>
                                     {content_html}
                                 </div>
                             </div>
@@ -4458,8 +4371,19 @@ def main():
                     
                     map_data["tooltip"] = map_data.apply(get_tooltip_style, axis=1)
                     map_data["index"] = map_data.index
-                    min_lat, max_lat = map_data["lat"].min(), map_data["lat"].max()
-                    min_lon, max_lon = map_data["lon"].min(), map_data["lon"].max()
+                    
+                    # Calculate bounds including search center location if present
+                    all_lats = list(map_data["lat"])
+                    all_lons = list(map_data["lon"])
+                    
+                    # Add search center location to bounds calculation if active
+                    if "search_center_location" in st.session_state:
+                        search_center = st.session_state["search_center_location"]
+                        all_lats.append(search_center['latitude'])
+                        all_lons.append(search_center['longitude'])
+                    
+                    min_lat, max_lat = min(all_lats), max(all_lats)
+                    min_lon, max_lon = min(all_lons), max(all_lons)
                     center_lat = (min_lat + max_lat) / 2
                     center_lon = (min_lon + max_lon) / 2
                     lat_diff = max_lat - min_lat
@@ -4512,21 +4436,33 @@ def main():
                     # Sort businesses alphabetically by name for better user experience
                     sorted_map_data = map_data.sort_values("DBA_NAME")
                     
-                    # Create business name options for multiselect
-                    business_options = sorted_map_data["DBA_NAME"].tolist()
-                    business_to_index = dict(zip(sorted_map_data["DBA_NAME"], sorted_map_data["index"]))
-                    
-                    # Get current selection for multiselect
+                    # Create business options as list of DATA_AGG_UIDs (unique IDs)
+                    business_options = [row["DATA_AGG_UID"] for _, row in sorted_map_data.iterrows()]
+                    # Map UID to index and UID to display name (optionally with address for clarity)
+                    business_uid_to_index = {row["DATA_AGG_UID"]: row["index"] for _, row in sorted_map_data.iterrows()}
+                    # Assign a display number for each duplicate DBA_NAME
+                    dba_name_counts = {}
+                    business_uid_to_label = {}
+                    for _, row in sorted_map_data.iterrows():
+                        dba = row["DBA_NAME"]
+                        dba_name_counts[dba] = dba_name_counts.get(dba, 0) + 1
+                        display_number = dba_name_counts[dba]
+                        # Only add [n] if there are duplicates
+                        if list(sorted_map_data["DBA_NAME"]).count(dba) > 1:
+                            label = f"{dba} [{display_number}]"
+                        else:
+                            label = dba
+                        business_uid_to_label[row["DATA_AGG_UID"]] = label
+
+                    # Get current selection for multiselect (as DATA_AGG_UIDs)
                     current_selection = []
                     if st.session_state.selected_business_indices:
                         for idx in st.session_state.selected_business_indices:
-                            business_name = sorted_map_data.loc[
-                                sorted_map_data["index"] == idx, "DBA_NAME"
-                            ]
-                            if not business_name.empty:
-                                current_selection.append(business_name.iloc[0])
-                    
-                    # Use multiselect with built-in search functionality
+                            match = sorted_map_data.loc[sorted_map_data["index"] == idx]
+                            if not match.empty:
+                                current_selection.append(match.iloc[0]["DATA_AGG_UID"])
+
+                    # Use multiselect with DATA_AGG_UID as value, DBA_NAME (and address) as display
                     selected_businesses = st.multiselect(
                         "🔍 Search and select up to 5 businesses to view details",
                         options=business_options,
@@ -4534,13 +4470,14 @@ def main():
                         key="business_multiselect",
                         help="Type to search and select up to 5 businesses - alphabetically sorted",
                         max_selections=5,
-                        placeholder="Type to search business names..."
+                        placeholder="Type to search business names...",
+                        format_func=lambda uid: business_uid_to_label.get(uid, str(uid))
                     )
-                    
+
                     # Handle selection logic - allow multiple selections
                     selected_indices = []
                     if selected_businesses:
-                        selected_indices = [business_to_index[name] for name in selected_businesses]
+                        selected_indices = [business_uid_to_index[uid] for uid in selected_businesses]
                     
                     # Show total count
                     if hasattr(st.session_state, 'selected_map_businesses'):
@@ -4638,28 +4575,47 @@ def main():
                         # For dark and satellite maps: use a much lighter blue (lighter than Pulse Blue)  
                         else:  # dark_mode or satellite_alt
                             return [173, 216, 255, 100]  # Light Sky Blue (lighter derivative of Global Blue palette)
+
+                    # Function to get color for each map point, overriding for current customers
+                    def get_map_point_color(row, selected=False):
+                        if row.get('IS_CURRENT_CUSTOMER', False) is True:
+                            return [244, 54, 76, 200]  # Global Raspberry
+                        if selected:
+                            # Use selected business color logic (existing)
+                            idx = st.session_state.selected_business_indices.index(row['index']) if row['index'] in st.session_state.selected_business_indices else 0
+                            selected_colors = [
+                                [255, 204, 0, 200],     # Sunshine
+ 
+                            ]
+                            return selected_colors[idx % len(selected_colors)]
+                        return get_non_selected_color()
                     
                     # Display selected business details
                     if st.session_state.selected_business_indices:
                         # Define colors for selected businesses using Global Payments tertiary palette
                         selected_colors = [
-                            [28, 171, 255, 200],   # Pulse Blue
-                            [255, 204, 0, 200],    # Sunshine
-                            [253, 160, 82, 200],   # Creamsicle
-                            [135, 23, 157, 200],   # Grape
-                            [244, 54, 76, 200]     # Raspberry
+                            [255, 204, 0, 200],     # Sunshine
+
                         ]
                         
                         selected_business_data = map_data.loc[map_data.index.isin(st.session_state.selected_business_indices)]
+                        
                         
                         def format_business_data_html(business_data):
                             """Generate business card HTML with simplified structure"""
                             business_idx_str = str(business_data.name if hasattr(business_data, 'name') else business_data.get('BUSINESS_ID', ''))
                             already_pushed = business_idx_str in get_sf_business_ids()
                             
+
+                            # Add INTERNAL_DNC flag if needed
+                            dnc_flag = ''
+                            dnc_val = business_data.get("INTERNAL_DNC")
+                            if dnc_val == 1:
+                                dnc_flag = '<span style="color:red; font-weight:bold; font-size:1.1em; margin-left:12px;">🚫 INTERNAL DNC</span>'
+
                             # Build header
                             sf_status = '<span class="sf-push-status">✓ Pushed to Salesforce</span>' if already_pushed else ''
-                            header = f'<h3><div class="business-name-container">{business_data["DBA_NAME"]}</div>{sf_status}</h3>'
+                            header = f'<h3><div class="business-name-container">{business_data["DBA_NAME"]}{dnc_flag}</div>{sf_status}</h3>'
                             
                             # Build sections using consolidated helper
                             sections = build_business_card_sections(business_data)
@@ -4830,6 +4786,69 @@ def main():
                     # Create map layers with multiple selection support
                     layers = []
                     
+                    # Add search center location point if active
+                    if "search_center_location" in st.session_state:
+                        search_center = st.session_state["search_center_location"]
+                        center_data = pd.DataFrame([{
+                            'lat': search_center['latitude'],
+                            'lon': search_center['longitude'],
+                            'address': search_center['address'],
+                            'radius_miles': search_center['radius_miles'],
+                            'tooltip': f"""
+                                <div style='background: linear-gradient(135deg, #262AFF 0%, #1CABFF 100%); 
+                                            color: white; padding: 16px 20px; border-radius: 16px; 
+                                            box-shadow: 0 8px 32px rgba(38, 42, 255, 0.25); 
+                                            font-family: "DM Sans", sans-serif; min-width: 280px; max-width: 350px;'>
+                                    <div style='display: flex; align-items: center; gap: 12px; margin-bottom: 12px;'>
+                                        <span style='background: rgba(255, 255, 255, 0.25); width: 36px; height: 36px; 
+                                                     display: inline-flex; align-items: center; justify-content: center; 
+                                                     border-radius: 12px; font-size: 18px;'>🎯</span>
+                                        <span style='font-weight: 700; font-size: 18px;'>Search Center</span>
+                                    </div>
+                                    <div style='font-size: 14px; opacity: 0.95; margin-bottom: 8px;'>
+                                        <strong>Location:</strong> {search_center['address']}
+                                    </div>
+                                    <div style='font-size: 14px; opacity: 0.95;'>
+                                        <strong>Search Radius:</strong> {search_center['radius_miles']} miles
+                                    </div>
+                                </div>
+                            """
+                        }])
+                        
+                        # Add search center as a distinctive layer (star/target icon style)
+                        # Use same radius scaling as business points, with a multiplier to make it slightly larger
+                        # Use appropriate scale based on whether businesses are selected and include zoom scaling
+                        if st.session_state.selected_business_indices:
+                            # Match the same zoom-based scaling logic as selected businesses
+                            current_zoom = st.session_state.map_view_state["zoom"]
+                            map_view_radius_multiplier = st.session_state.selected_radius_scale
+                            if current_zoom >= 15:
+                                map_view_radius_multiplier *= 1.0  # Smaller for very close zoom
+                            elif current_zoom >= 13:
+                                map_view_radius_multiplier *= 1.5  # Smaller for close zoom
+                            elif current_zoom >= 11:
+                                map_view_radius_multiplier *= 2.0  # Medium-small size
+                            else:
+                                map_view_radius_multiplier *= 2.5  # Reduced for far zoom
+                            search_center_radius = initial_radius * map_view_radius_multiplier * 1.2  # Slightly larger than business points
+                        else:
+                            # Use same scaling as unselected business points
+                            search_center_radius = initial_radius * st.session_state.initial_radius_scale * 1.5
+                        
+                        layers.append(
+                            pdk.Layer(
+                                "ScatterplotLayer",
+                                data=center_data,
+                                get_position=["lon", "lat"],
+                                get_fill_color=[38, 42, 255, 220],  # Global Blue with high opacity
+                                get_line_color=[255, 255, 255, 255],  # White border
+                                line_width_min_pixels=4,
+                                get_radius=search_center_radius,  # Scaled with other map points
+                                pickable=True,
+                                auto_highlight=True
+                            )
+                        )
+                    
                     if st.session_state.selected_business_indices:
                         # Calculate dynamic radius based on zoom level and selection count
                         current_zoom = st.session_state.map_view_state["zoom"]
@@ -4878,15 +4897,17 @@ def main():
                         else:
                             map_view_radius_multiplier *= 2.5  # Reduced for far zoom
                         
-                        # Add non-selected businesses layer (gray/red) - only 10% smaller than selected
+                        # Add non-selected businesses layer (precompute fill_color)
                         if not non_selected_data.empty:
+                            non_selected_data = non_selected_data.copy()
+                            non_selected_data["fill_color"] = non_selected_data.apply(lambda row: get_map_point_color(row, selected=False), axis=1)
                             layers.append(
                                 pdk.Layer(
                                     "ScatterplotLayer",
                                     data=non_selected_data,
                                     get_position=["lon", "lat"],
-                                    get_fill_color=get_non_selected_color(),  # Dynamic color based on map style
-                                    get_radius=initial_radius * map_view_radius_multiplier * 0.9 * 0.9,  # Only 10% smaller than selected
+                                    get_fill_color="fill_color",
+                                    get_radius=initial_radius * map_view_radius_multiplier * 0.9 * 0.9,
                                     pickable=True,
                                     auto_highlight=True
                                 )
@@ -4896,29 +4917,32 @@ def main():
                         for i, business_idx in enumerate(st.session_state.selected_business_indices):
                             if business_idx in map_data.index:
                                 selected_data = map_data.loc[[business_idx]]
-                                color = selected_colors[i % len(selected_colors)]  # Cycle through colors if more than 5                                
                                 # Use ColumnLayer for selected businesses to make them stand out as 3D pillars
+                                selected_data = selected_data.copy()
+                                selected_data["fill_color"] = selected_data.apply(lambda row: get_map_point_color(row, selected=True), axis=1)
                                 layers.append(
                                     pdk.Layer(
                                         "ColumnLayer",
                                         data=selected_data,
                                         get_position=["lon", "lat"],
-                                        get_fill_color=color,
-                                        get_elevation=20,  # Reduced height for more subtle effect
-                                        elevation_scale=initial_radius * map_view_radius_multiplier * 0.05,  # Shorter scaling
+                                        get_fill_color="fill_color",
+                                        get_elevation=20,
+                                        elevation_scale=initial_radius * map_view_radius_multiplier * 0.05,
                                         radius=initial_radius * map_view_radius_multiplier * 0.9,
                                         pickable=True,
                                         auto_highlight=True
                                     )
                                 )
                     else:
-                        # No selection - show all businesses in default color
+                        # No selection - show all businesses, precompute fill_color
+                        map_data = map_data.copy()
+                        map_data["fill_color"] = map_data.apply(lambda row: get_map_point_color(row, selected=False), axis=1)
                         layers.append(
                             pdk.Layer(
                                 "ScatterplotLayer",
                                 data=map_data,
                                 get_position=["lon", "lat"],
-                                get_fill_color=get_non_selected_color(),  # Dynamic color based on map style
+                                get_fill_color="fill_color",
                                 get_radius=initial_radius * st.session_state.initial_radius_scale,
                                 pickable=True,
                                 auto_highlight=True
@@ -5053,24 +5077,207 @@ def main():
                             style_col4
                         )
                 else:
-                    init_session_state_key("map_view_state", {
-                        "latitude": 39.8283,
-                        "longitude": -98.5795,
-                        "zoom": 4
-                    })
-                    st.warning("No valid longitude/latitude data available after filtering.")
-                    view_state = pdk.ViewState(
-                        latitude=float(st.session_state.map_view_state["latitude"]),
-                        longitude=float(st.session_state.map_view_state["longitude"]),
-                        zoom=int(st.session_state.map_view_state["zoom"]),
-                        pitch=0
-                    )
-                    deck = pdk.Deck(
-                        layers=[],
-                        initial_view_state=view_state,
-                        map_style=map_styles.get(get_current_map_style())
-                    )
-                    st.pydeck_chart(deck)
+                    # No business data, but check for search center location
+                    if "search_center_location" in st.session_state:
+                        # Show map with search center point only
+                        search_center = st.session_state["search_center_location"]
+                        
+                        # Center map on search location
+                        init_session_state_key("map_view_state", {
+                            "latitude": search_center['latitude'],
+                            "longitude": search_center['longitude'],
+                            "zoom": 12  # Good zoom level to see the search area
+                        })
+                        
+                        # Create data for search center point
+                        center_data = pd.DataFrame([{
+                            'lat': search_center['latitude'],
+                            'lon': search_center['longitude'],
+                            'address': search_center['address'],
+                            'radius_miles': search_center['radius_miles'],
+                            'tooltip': f"""
+                                <div style='background: linear-gradient(135deg, #262AFF 0%, #1CABFF 100%); 
+                                            color: white; padding: 16px 20px; border-radius: 16px; 
+                                            box-shadow: 0 8px 32px rgba(38, 42, 255, 0.25); 
+                                            font-family: "DM Sans", sans-serif; min-width: 280px; max-width: 350px;'>
+                                    <div style='display: flex; align-items: center; gap: 12px; margin-bottom: 12px;'>
+                                        <span style='background: rgba(255, 255, 255, 0.25); width: 36px; height: 36px; 
+                                                     display: inline-flex; align-items: center; justify-content: center; 
+                                                     border-radius: 12px; font-size: 18px;'>🎯</span>
+                                        <span style='font-weight: 700; font-size: 18px;'>Search Center</span>
+                                    </div>
+                                    <div style='font-size: 14px; opacity: 0.95; margin-bottom: 8px;'>
+                                        <strong>Location:</strong> {search_center['address']}
+                                    </div>
+                                    <div style='font-size: 14px; opacity: 0.95;'>
+                                        <strong>Search Radius:</strong> {search_center['radius_miles']} miles
+                                    </div>
+                                </div>
+                            """
+                        }])
+                        
+                        # Create view state
+                        view_state = pdk.ViewState(
+                            latitude=float(search_center['latitude']),
+                            longitude=float(search_center['longitude']),
+                            zoom=12,
+                            pitch=0
+                        )
+                        
+                        # Create layers with search center point
+                        # Use same radius scaling as business points for consistency
+                        search_center_radius = 300 * st.session_state.initial_radius_scale
+                        layers = [
+                            pdk.Layer(
+                                "ScatterplotLayer",
+                                data=center_data,
+                                get_position=["lon", "lat"],
+                                get_fill_color=[38, 42, 255, 220],
+                                get_line_color=[255, 255, 255, 255],
+                                line_width_min_pixels=4,
+                                get_radius=search_center_radius,  # Scaled with radius controls
+                                pickable=True,
+                                auto_highlight=True
+                            )
+                        ]
+                        
+                        # Create tooltip
+                        tooltip = {
+                            "html": "{tooltip}",
+                            "style": {
+                                "background-color": "transparent",
+                                "color": "transparent",
+                                "padding": "0",
+                                "box-shadow": "none",
+                                "border-radius": "0"
+                            }
+                        }
+                        
+                        # Create and display the map
+                        deck = pdk.Deck(
+                            layers=layers,
+                            initial_view_state=view_state,
+                            map_style=map_styles.get(get_current_map_style()),
+                            tooltip=tooltip
+                        )
+                        
+                        st.info(f"No businesses found within {search_center['radius_miles']} miles of '{search_center['address']}', but showing your search center location.")
+                        st.pydeck_chart(deck)
+                        
+                        # Add map controls for search center point size adjustment
+                        st.markdown(
+                            """
+                            <style>
+                            div[data-testid="stHorizontalBlock"] > div:first-child {
+                                display: flex;
+                                justify-content: flex-start;
+                                align-items: center;
+                                padding-left: 0;
+                                margin-left: 0;
+                            }
+                            div[data-testid="stHorizontalBlock"] > div:first-child > div[data-testid="stHorizontalBlock"] {
+                                display: flex;
+                                justify-content: flex-start;
+                                gap: 4px;
+                                margin: 0;
+                                padding: 0;
+                            }
+                            div[data-testid="stHorizontalBlock"] > div:first-child button[kind="secondary"] {
+                                padding: 6px;
+                                font-size: 12px;
+                                width: 36px;
+                                height: 36px;
+                                min-width: unset;
+                                border: 1px solid #e6e6e6;
+                                background-color: #f0f2f6;
+                                color: #333333;
+                                border-radius: 4px;
+                            }
+                            div[data-testid="stHorizontalBlock"] > div:last-child {
+                                display: flex;
+                                justify-content: flex-end;
+                                align-items: center;
+                                padding-right: 0;
+                                margin-right: 0;
+                            }
+                            </style>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        
+                        # Map controls for search center point
+                        col_left, col_spacer, col_right = create_map_controls_layout()
+                        with col_left:
+                            col_larger, col_reset, col_smaller = create_radius_controls_layout()
+                            with col_smaller:
+                                if st.button(":material/remove:", key="radius_smaller_search", use_container_width=True, help="Shrink search center point"):
+                                    adjust_radius_scale(0.5)
+                                    st.rerun()
+                            with col_larger:
+                                if st.button(":material/add:", key="radius_larger_search", use_container_width=True, help="Enlarge search center point"):
+                                    adjust_radius_scale(2.0)
+                                    st.rerun()
+                            with col_reset:
+                                if st.button(":material/refresh:", key="radius_refresh_search", use_container_width=True, help="Reset search center point radius"):
+                                    reset_radius_scale()
+                                    st.rerun()
+                        with col_right:
+                            # Map style buttons arranged in single row
+                            style_col1, style_col2, style_col3, style_col4 = create_map_style_buttons_layout()
+                            
+                            current_style = get_current_map_style()
+                            
+                            create_map_style_button(
+                                ":material/light_mode:",
+                                "map_style_light_search", 
+                                "Light map style",
+                                current_style,
+                                style_col1
+                            )
+                            
+                            create_map_style_button(
+                                ":material/dark_mode:",
+                                "map_style_dark_search",
+                                "Dark map style", 
+                                current_style,
+                                style_col2
+                            )
+                            
+                            create_map_style_button(
+                                ":material/satellite_alt:",
+                                "map_style_satellite_search",
+                                "Satellite map style",
+                                current_style,
+                                style_col3
+                            )
+                            
+                            create_map_style_button(
+                                ":material/terrain:",
+                                "map_style_terrain_search",
+                                "Street map style",
+                                current_style,
+                                style_col4
+                            )
+                    else:
+                        # No business data and no search center
+                        init_session_state_key("map_view_state", {
+                            "latitude": 39.8283,
+                            "longitude": -98.5795,
+                            "zoom": 4
+                        })
+                        st.warning("No valid longitude/latitude data available after filtering.")
+                        view_state = pdk.ViewState(
+                            latitude=float(st.session_state.map_view_state["latitude"]),
+                            longitude=float(st.session_state.map_view_state["longitude"]),
+                            zoom=int(st.session_state.map_view_state["zoom"]),
+                            pitch=0
+                        )
+                        deck = pdk.Deck(
+                            layers=[],
+                            initial_view_state=view_state,
+                            map_style=map_styles.get(get_current_map_style())
+                        )
+                        st.pydeck_chart(deck)
             else:
                 st.error(f"Map requires '{lon_col}' and '{lat_col}' columns in the table.")
                 init_session_state_key("map_view_state", {
@@ -5304,10 +5511,6 @@ def main():
             
         st.info("API testing will be available when the integration is ready.")
 
-
-# =============================================================================
-# Application entry point - runs when script is executed directly
-# In Streamlit, this executes when the page loads or reruns due to user interaction
-
 if __name__ == "__main__":
     main()
+
