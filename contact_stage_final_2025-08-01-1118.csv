@@ -1,0 +1,5 @@
+name,type,kind,null?,default,primary key,unique key,check,expression,comment,policy name,privacy domain
+IDENTIFIER,VARCHAR(16777216),COLUMN,Y,,N,N,,,,,
+ZI_C_LOCATION_ID,VARCHAR(16777216),COLUMN,Y,,N,N,,,,,
+PROSPECT_ID,VARCHAR(16777216),COLUMN,Y,,N,N,,,,,
+TOP10_CONTACTS,OBJECT,COLUMN,Y,,N,N,,,,,
