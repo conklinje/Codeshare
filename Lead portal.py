@@ -16,7 +16,7 @@ import re              # For phone number formatting and text validation
 import urllib.parse    # For URL encoding address parameters
 from datetime import datetime  # For timestamps in Salesforce integration
 
-import pydeck as pdk   # For interactive maps with business locations
+import pydeck as pdk   # For interactive maps with prospect locations
 import math            # For map zoom calculations and coordinate math
 
 
@@ -37,7 +37,7 @@ def get_filter_table_name():
     return TABLE_CONFIG["filter_table_name"]
 
 MAX_RESULTS = 300  # Maximum records to fetch per query
-MAP_POINTS_LIMIT = 100  # Maximum businesses to display on map for performance
+MAP_POINTS_LIMIT = 100  # Maximum prospectes to display on map for performance
 PAGE_SIZE_OPTIONS = [10, 25, 50, 100]  # Available pagination options for different screen sizes
 DEFAULT_PAGE_SIZE = 100  # Default records per page (balanced for responsive design)
 ROW_HEIGHT = 45  # Height of each row in data display (optimized for compact view)
@@ -45,7 +45,7 @@ ROW_HEIGHT = 45  # Height of each row in data display (optimized for compact vie
 CACHE_TTL = 600  # Cache time-to-live in seconds (10 minutes)
 
 DEFAULT_MAP_ZOOM = 9  # Default zoom level for map view
-SELECTED_BUSINESS_ZOOM = 15  # Zoom level when a single business is selected
+SELECTED_prospect_ZOOM = 15  # Zoom level when a single prospect is selected
 CHIPS_PER_ROW = 3  # Number of filter chips per row for compact display
 
 MIN_DISPLAY_ROWS = 2  # Minimum rows to display in data tables
@@ -65,7 +65,7 @@ BUTTON_LABEL_GET_DIRECTIONS = "Get Directions"
 
 STATIC_FILTERS = {
     # Text-based search filters
-    "DBA_NAME": {"type": "text", "label": "Business Name", "column_name": "DBA_NAME"},
+    "DBA_NAME": {"type": "text", "label": "Prospect Name", "column_name": "DBA_NAME"},
     # Location radius search filters
     "LOCATION_ADDRESS": {"type": "text", "label": "Address or ZIP Code", "column_name": "LOCATION_ADDRESS"},
     "RADIUS_MILES": {"type": "number", "label": "Radius (Miles)", "column_name": "RADIUS_MILES", "min_value": 1, "max_value": 500, "default": 25},
@@ -77,34 +77,32 @@ STATIC_FILTERS = {
     "REVENUE": {"type": "range", "label": "Revenue", "column_name": "REVENUE"},
     "NUMBER_OF_EMPLOYEES": {"type": "range", "label": "Number of Employees", "column_name": "NUMBER_OF_EMPLOYEES"},
     "NUMBER_OF_LOCATIONS": {"type": "range", "label": "Number of Locations", "column_name": "NUMBER_OF_LOCATIONS"},
-    "HAS_CONTACT_INFO": {
-        "type": "selectbox", 
-        "label": "Contact Info Filter", 
-        "column_name": "HAS_CONTACT_INFO",
+    "CONTACT_INFO_FILTER": {
+        "type": "checkbox", 
+        "label": "Show only prospects with", 
+        "column_name": "CONTACT_INFO_FILTER",
         "options": [
-            "Only Prospects with Contact Info",
-            "Show All Prospects",
-            "Only Prospects without Contact Info"
+            "Address",
+            "Phone Contact",
+            "Email Contact"
         ]
     },
-    "B2B": {
-        "type": "selectbox",
-        "label": "B2B",
-        "column_name": "IS_B2B",
+    "PROSPECT_TYPE": {
+        "type": "checkbox",
+        "label": "Prospect type",
+        "column_name": "PROSPECT_TYPE",
         "options": [
-            "Include B2B and non-B2B",
-            "Exclude B2B",
-            "Show only B2B"
+            "B2B",
+            "B2C"
         ]
     },
-    "B2C": {
-        "type": "selectbox",
-        "label": "B2C",
-        "column_name": "IS_B2C",
+    "customer_status": {
+        "type": "checkbox",
+        "label": "Customer Status",
+        "column_name": "IS_CURRENT_CUSTOMER",
         "options": [
-            "Include B2C and non-B2C",
-            "Exclude B2C",
-            "Show only B2C"
+            "Current Customers",
+            "Not Current Customers"
         ]
     }
 }
@@ -131,9 +129,11 @@ def initialize_session_state():
         "filters": {
             col: (
                 [] if STATIC_FILTERS[col]["type"] == "dropdown" else
+                [] if STATIC_FILTERS[col]["type"] == "multiselect" else
                 [None, None] if STATIC_FILTERS[col]["type"] == "range" else
                 STATIC_FILTERS[col]["options"][0] if STATIC_FILTERS[col]["type"] == "selectbox" else
                 STATIC_FILTERS[col]["default"] if STATIC_FILTERS[col]["type"] == "number" else
+                {option: False for option in STATIC_FILTERS[col]["options"]} if STATIC_FILTERS[col]["type"] == "checkbox" else
                 ""  # Empty string for text inputs
             )
             for col in STATIC_FILTERS
@@ -152,20 +152,22 @@ def initialize_session_state():
         "confirm_delete_search": False,     # Confirmation state for search deletion
         "search_to_delete": None,           # Search marked for deletion
         # UI State Management
-        "filter_update_trigger": {          # Tracks when dropdown filters need refreshing
-            col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] == "dropdown"
+        "filter_update_trigger": {          # Tracks when dropdown and multiselect filters need refreshing
+            col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] in ["dropdown", "multiselect"]
         },
         "reset_counter": 0,                 # Triggers filter reset when incremented
         "sidebar_collapsed": False,         # Controls sidebar visibility
         "data_editor_refresh_counter": 0,   # Forces data editor refresh
         # Map Interaction
         "map_style_selector": ":material/dark_mode:",  # Current map style
-        "selected_business_indices": [],    # Businesses selected on map
-        "business_search_term": "",         # Search term for business filtering
+        "selected_prospect_indices": [],    # prospectes selected on map
+        "prospect_search_term": "",         # Search term for prospect filtering
         # Salesforce Integration (Simple ID tracking approach)
-        "sf_pushed_count": 0,              # Count of businesses marked for Salesforce
-        "sf_business_ids": [],             # List of business IDs to push to Salesforce
-        "sf_last_update": datetime.now().isoformat(),  # Timestamp of last Salesforce update
+        "sf_pushed_count": 0,              # Count of prospectes written to sf_leads table
+        "sf_prospect_ids": [],             # List of prospect IDs written to sf_leads table
+        "sf_last_update": datetime.now().isoformat(),  # Timestamp of last sf_leads table update
+        # Staging for Salesforce submission
+        "staged_prospects": [],             # Prospects staged for Salesforce submission
         # Geocoding cache
         "geocode_cache": {}                 # Cache for geocoded addresses to avoid repeated API calls
     }
@@ -173,6 +175,22 @@ def initialize_session_state():
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    
+    # Clean up legacy B2B/B2C filters and ensure PROSPECT_TYPE is properly initialized
+    if "B2B" in st.session_state.get("filters", {}):
+        del st.session_state["filters"]["B2B"]
+    if "B2C" in st.session_state.get("filters", {}):
+        del st.session_state["filters"]["B2C"]
+    
+    # Ensure PROSPECT_TYPE is properly initialized
+    if "PROSPECT_TYPE" not in st.session_state.get("filters", {}):
+        st.session_state["filters"]["PROSPECT_TYPE"] = {"B2B": False, "B2C": False}
+    
+    # Clean up legacy customer_status and ensure it's properly initialized as checkbox
+    current_customer_status = st.session_state.get("filters", {}).get("customer_status")
+    if not isinstance(current_customer_status, dict):
+        # Convert from old selectbox format to new checkbox format
+        st.session_state["filters"]["customer_status"] = {"Current Customers": False, "Not Current Customers": False}
 
 
 def get_current_user(session):
@@ -199,23 +217,418 @@ def get_current_user(session):
         return "SIS_USER"
 
 
-def add_business_to_salesforce(business_id):
+def escape_sql_string(value):
+    """
+    Escape a string value for SQL by replacing single quotes with double quotes.
+    Returns 'NULL' for None values.
+    """
+    if value is None:
+        return 'NULL'
+    
+    # Handle pandas Series - extract the scalar value
+    if hasattr(value, 'iloc'):
+        try:
+            value = value.iloc[0] if len(value) > 0 else None
+            if value is None:
+                return 'NULL'
+        except:
+            return 'NULL'
+    
+    # Handle empty strings and convert to string
+    str_value = str(value) if value is not None else ''
+    
+    # Check for pandas NaN or other problematic values
+    if str_value.lower() in ['nan', 'none', '<na>']:
+        return 'NULL'
+    
+    # Escape single quotes
+    escaped_value = str_value.replace("'", "''")
+    return f"'{escaped_value}'"
 
-    business_id_str = str(business_id)
+def escape_sql_number(value):
+    """
+    Escape a numeric value for SQL.
+    Returns 'NULL' for None values.
+    """
+    if value is None:
+        return 'NULL'
     
+    # Handle pandas Series - extract the scalar value
+    if hasattr(value, 'iloc'):
+        try:
+            value = value.iloc[0] if len(value) > 0 else None
+            if value is None:
+                return 'NULL'
+        except:
+            return 'NULL'
     
-    # Check if already tracked to avoid duplicates
-    if business_id_str in st.session_state["sf_business_ids"]:
-        return False
+    # Convert to string and check for problematic values
+    str_value = str(value) if value is not None else ''
     
-    # Add the new business ID
-    st.session_state["sf_business_ids"].append(business_id_str)
+    # Check for pandas NaN or other problematic values
+    if str_value.lower() in ['nan', 'none', '<na>', '']:
+        return 'NULL'
     
-    # Update the counter and timestamp
-    st.session_state["sf_pushed_count"] = len(st.session_state["sf_business_ids"])
-    st.session_state["sf_last_update"] = datetime.now().isoformat()
+    # Try to convert to a number to validate
+    try:
+        # If it's a valid number, return it as string
+        float(str_value)  # This will raise ValueError if not a number
+        return str_value
+    except ValueError:
+        # If not a valid number, return NULL
+        return 'NULL'
+
+
+def get_streamlit_user_email():
+    """
+    Get the current Streamlit user's email.
+    TODO: Replace with actual user authentication when available.
     
-    return True
+    Returns:
+        str: The user's email address
+    """
+    # TODO: Replace with actual Streamlit user session email
+    return 'jacob.mcferran@e-hps.com'
+
+
+def get_salesforce_owner_id(user_email, session):
+    """
+    Get the Salesforce owner ID for a given email address.
+    
+    Args:
+        user_email (str): Email address to lookup
+        session: Active Snowflake session
+        
+    Returns:
+        dict: {'success': bool, 'owner_id': str, 'message': str}
+    """
+    try:
+        escaped_email = escape_sql_string(user_email)
+        owner_query = f"""
+        SELECT id 
+        FROM salesforce.sfdc.user 
+        WHERE email = {escaped_email}
+        """
+        
+        owner_result = session.sql(owner_query).collect()
+        
+        if not owner_result:
+            return {
+                'success': False,
+                'owner_id': None,
+                'message': f'No Salesforce user found with email {user_email}'
+            }
+        
+        return {
+            'success': True,
+            'owner_id': owner_result[0]['ID'],
+            'message': f'Found Salesforce user for {user_email}'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'owner_id': None,
+            'message': f'Error looking up Salesforce user: {str(e)}'
+        }
+
+
+def insert_prospect_to_sf_table(prospect_id, session, contact_data_override=None):
+
+    try:
+        # Always fetch the prospect data from the main table first
+        prospect_query = f"""
+        SELECT 
+            prospect_id,
+            address,
+            revenue,
+            city,
+            state,
+            zip,
+            dba_name,
+            primary_industry,
+            contact_email,
+            taxid,
+            contact_name,
+            mcc_code,
+            identifier,
+            number_of_locations,
+            number_of_employees,
+            phone,
+            contact_mobile,
+            zi_c_company_id,
+            zi_contact_id,
+            website,
+            data_agg_uid,
+            contact_job_title,
+            ZI_C_LOCATION_ID
+        FROM {get_table_name()}
+        WHERE prospect_id = '{prospect_id}'
+        """
+        
+        prospect_result = session.sql(prospect_query).collect()
+        
+        if not prospect_result:
+            return {
+                'success': False, 
+                'message': f'Prospect ID {prospect_id} not found in source table',
+                'is_duplicate': False
+            }
+        
+        prospect_row = prospect_result[0]
+        prospect_data = {
+            'PROSPECT_ID': prospect_row['PROSPECT_ID'],
+            'ADDRESS': prospect_row['ADDRESS'],
+            'REVENUE': prospect_row['REVENUE'],
+            'CITY': prospect_row['CITY'],
+            'STATE': prospect_row['STATE'],
+            'ZIP': prospect_row['ZIP'],
+            'DBA_NAME': prospect_row['DBA_NAME'],
+            'PRIMARY_INDUSTRY': prospect_row['PRIMARY_INDUSTRY'],
+            'CONTACT_EMAIL': prospect_row['CONTACT_EMAIL'],
+            'TAXID': prospect_row['TAXID'],
+            'CONTACT_NAME': prospect_row['CONTACT_NAME'],
+            'MCC_CODE': prospect_row['MCC_CODE'],
+            'IDENTIFIER': prospect_row['IDENTIFIER'],
+            'NUMBER_OF_LOCATIONS': prospect_row['NUMBER_OF_LOCATIONS'],
+            'NUMBER_OF_EMPLOYEES': prospect_row['NUMBER_OF_EMPLOYEES'],
+            'PHONE': prospect_row['PHONE'],
+            'CONTACT_MOBILE': prospect_row['CONTACT_MOBILE'],
+            'ZI_C_COMPANY_ID': prospect_row['ZI_C_COMPANY_ID'],
+            'ZI_CONTACT_ID': prospect_row['ZI_CONTACT_ID'],
+            'WEBSITE': prospect_row['WEBSITE'],
+            'DATA_AGG_UID': prospect_row['DATA_AGG_UID'],
+            'CONTACT_JOB_TITLE': prospect_row['CONTACT_JOB_TITLE'],
+            'ZI_C_LOCATION_ID': prospect_row['ZI_C_LOCATION_ID']
+        }
+        
+        # Override contact fields if provided
+        if contact_data_override:
+            for key, value in contact_data_override.items():
+                if key in prospect_data and value:  # Only override if value is not empty
+                    prospect_data[key] = value
+        
+        # Parse contact name into first and last name
+        contact_name = prospect_data['CONTACT_NAME'] or ''
+        name_parts = contact_name.split(' ') if contact_name else ['', '']
+        first_name = name_parts[0] if len(name_parts) > 0 else None
+        last_name = name_parts[-1] if len(name_parts) > 1 else None
+        
+        # Get owner_id from Salesforce user table based on email
+        streamlit_user_email = get_streamlit_user_email()
+        
+        owner_lookup = get_salesforce_owner_id(streamlit_user_email, session)
+        
+        if not owner_lookup['success']:
+            return {
+                'success': False,
+                'message': owner_lookup['message'],
+                'is_duplicate': False
+            }
+        
+        owner_id = owner_lookup['owner_id']
+        
+        # Prepare the data for insertion based on your mapping
+        insert_data = {
+            'id': f"{prospect_id}_{owner_id}",  # Concatenate prospect_id and owner_id for the ID field
+            'address': prospect_data['ADDRESS'],
+            'historical_affiliate_id': None,  # Always null per your mapping
+            'annual_revenue': prospect_data['REVENUE'],
+            'city': prospect_data['CITY'],
+            'state': prospect_data['STATE'],
+            'zip': prospect_data['ZIP'],
+            'company': prospect_data['DBA_NAME'],
+            'company_industry': prospect_data['PRIMARY_INDUSTRY'],
+            'email': prospect_data['CONTACT_EMAIL'],
+            'federal_tax_id': prospect_data['TAXID'],
+            'first_name': first_name,
+            'last_name': last_name,
+            'lead_affiliate_ids': None,  # Always null per your mapping
+            'mcc_code_lookup': prospect_data['MCC_CODE'],
+            'lead_mid': prospect_data['IDENTIFIER'],
+            'no_of_locations': prospect_data['NUMBER_OF_LOCATIONS'],
+            'no_of_employees': prospect_data['NUMBER_OF_EMPLOYEES'],
+            'phone': prospect_data['PHONE'],
+            'phone_mobile': prospect_data['CONTACT_MOBILE'],
+            'phone_extension': None,  # Always null per your mapping
+            'sic_code': None,  # Always null per your mapping
+            'sic_description': None,  # Always null per your mapping
+            'vendor_company_id': prospect_data['ZI_C_COMPANY_ID'],
+            'vendor_contact_id': prospect_data['ZI_CONTACT_ID'],
+            'website': prospect_data['WEBSITE'],
+            'zi_location_id': prospect_data['DATA_AGG_UID'],
+            'data_vendor_names': 'ZoomInfo' if str(prospect_data['DATA_AGG_UID'] or '').startswith('Wkkx') else None,
+            'lead_source_url': 'www.globalpayments.com',
+            'owner_id': owner_id,
+            'record_type_id': None,  # Always null per your mapping
+            'lead_source': 'Self Sourced',
+            'lead_source_desc': 'GP Prospecting Portal',
+            'status': '1a. Cold Prospecting',
+            'title': prospect_data['CONTACT_JOB_TITLE'],
+            'zi_location_id_org': prospect_data['ZI_C_LOCATION_ID']
+        }
+        
+        # Check for duplicates using the composite ID field (prospect_id + owner_id)
+        # This is the proper way to check for duplicates since the ID is unique per prospect per owner
+        duplicate_check_query = f"""
+        SELECT COUNT(*) as count_existing
+        FROM sandbox.conklin.sf_leads
+        WHERE id = {escape_sql_string(insert_data["id"])}
+        """
+        
+        duplicate_result = session.sql(duplicate_check_query).collect()
+        
+        if duplicate_result[0]['COUNT_EXISTING'] > 0:
+            return {
+                'success': False,
+                'message': f'Prospect {insert_data["company"] or "Unknown"} already exists',
+                'is_duplicate': True
+            }
+        
+        # Build the INSERT statement with proper escaping
+        insert_query = f"""
+        INSERT INTO sandbox.conklin.sf_leads (
+            id,
+            address,
+            historical_affiliate_id,
+            annual_revenue,
+            city,
+            state,
+            zip,
+            company,
+            company_industry,
+            email,
+            federal_tax_id,
+            first_name,
+            last_name,
+            lead_affiliate_ids,
+            mcc_code_lookup,
+            lead_mid,
+            no_of_locations,
+            no_of_employees,
+            phone,
+            phone_mobile,
+            phone_extension,
+            sic_code,
+            sic_description,
+            vendor_company_id,
+            vendor_contact_id,
+            website,
+            zi_location_id,
+            data_vendor_names,
+            lead_source_url,
+            owner_id,
+            record_type_id,
+            lead_source,
+            lead_source_desc,
+            status,
+            title,
+            zi_location_id_org
+        )
+        VALUES (
+            {escape_sql_string(insert_data["id"])},
+            {escape_sql_string(insert_data["address"])},
+            {escape_sql_string(insert_data["historical_affiliate_id"])},
+            {escape_sql_number(insert_data["annual_revenue"])},
+            {escape_sql_string(insert_data["city"])},
+            {escape_sql_string(insert_data["state"])},
+            {escape_sql_string(insert_data["zip"])},
+            {escape_sql_string(insert_data["company"])},
+            {escape_sql_string(insert_data["company_industry"])},
+            {escape_sql_string(insert_data["email"])},
+            {escape_sql_string(insert_data["federal_tax_id"])},
+            {escape_sql_string(insert_data["first_name"])},
+            {escape_sql_string(insert_data["last_name"])},
+            {escape_sql_string(insert_data["lead_affiliate_ids"])},
+            {escape_sql_string(insert_data["mcc_code_lookup"])},
+            {escape_sql_string(insert_data["lead_mid"])},
+            {escape_sql_number(insert_data["no_of_locations"])},
+            {escape_sql_number(insert_data["no_of_employees"])},
+            {escape_sql_string(insert_data["phone"])},
+            {escape_sql_string(insert_data["phone_mobile"])},
+            {escape_sql_string(insert_data["phone_extension"])},
+            {escape_sql_string(insert_data["sic_code"])},
+            {escape_sql_string(insert_data["sic_description"])},
+            {escape_sql_string(insert_data["vendor_company_id"])},
+            {escape_sql_string(insert_data["vendor_contact_id"])},
+            {escape_sql_string(insert_data["website"])},
+            {escape_sql_string(insert_data["zi_location_id"])},
+            {escape_sql_string(insert_data["data_vendor_names"])},
+            {escape_sql_string(insert_data["lead_source_url"])},
+            {escape_sql_string(insert_data["owner_id"])},
+            {escape_sql_string(insert_data["record_type_id"])},
+            {escape_sql_string(insert_data["lead_source"])},
+            {escape_sql_string(insert_data["lead_source_desc"])},
+            {escape_sql_string(insert_data["status"])},
+            {escape_sql_string(insert_data["title"])},
+            {escape_sql_number(insert_data["zi_location_id_org"])}
+        )
+        """
+        
+        # Execute the insert
+        try:
+            session.sql(insert_query).collect()
+        except Exception as sql_error:
+            raise sql_error
+        
+        return {
+            'success': True,
+            'message': f'Successfully added {insert_data["company"] or "prospect"} to Salesforce',
+            'is_duplicate': False
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'message': f'Error inserting prospect to Salesforce: {str(e)}',
+            'is_duplicate': False
+        }
+
+
+def add_prospect_to_salesforce(prospect_id):
+
+    prospect_id_str = str(prospect_id)
+    
+    # Check if already tracked in session state to avoid duplicates in UI
+    if prospect_id_str in st.session_state["sf_prospect_ids"]:
+        return {
+            'success': False,
+            'message': f'Prospect {prospect_id} already tracked in this session',
+            'is_duplicate': False,
+            'already_tracked': True
+        }
+    
+    try:
+        insert_result = insert_prospect_to_sf_table(prospect_id, session)
+        
+        if insert_result['success']:
+            # Only add to session state tracking if the database insert succeeded
+            st.session_state["sf_prospect_ids"].append(prospect_id_str)
+            st.session_state["sf_pushed_count"] = len(st.session_state["sf_prospect_ids"])
+            st.session_state["sf_last_update"] = datetime.now().isoformat()
+            
+            return {
+                'success': True,
+                'message': insert_result['message'],
+                'is_duplicate': False,
+                'already_tracked': False
+            }
+        else:
+            # Insert failed - return the error details but don't update session state
+            return {
+                'success': False,
+                'message': insert_result['message'],
+                'is_duplicate': insert_result['is_duplicate'],
+                'already_tracked': False
+            }
+            
+    except Exception as e:
+        return {
+            'success': False,
+            'message': f'Error processing prospect {prospect_id}: {str(e)}',
+            'is_duplicate': False,
+            'already_tracked': False
+        }
 
 
 
@@ -499,13 +912,13 @@ st.markdown("""
     .gp-font-xs { font-size: 0.7rem !important; }
     
     /* Apply gradients to specific components */
-    .business-details-card h3,
+    .prospect-details-card h3,
     .step-icon,
     .gp-progress-bar {
         background: var(--gp-gradient-primary) !important;
     }
     
-    .business-data-timeline {
+    .prospect-data-timeline {
         background: var(--gp-gradient-surface) !important;
     }
     
@@ -1135,8 +1548,8 @@ st.markdown("""
         font-size: 0.8rem;
     }
 
-    /* Business details card - Enhanced with new component system */
-    .business-details-card {
+    /* prospect details card - Enhanced with new component system */
+    .prospect-details-card {
         /* Use new component system as base */
         background: var(--gp-background);
         border: 1px solid var(--gp-border);
@@ -1150,11 +1563,11 @@ st.markdown("""
         padding: 0;
         font-size: 0.75rem;
     }
-    .business-details-card:hover {
+    .prospect-details-card:hover {
         box-shadow: var(--gp-shadow-xl);
         transform: translateY(-2px);
     }
-    .business-details-card h3 {
+    .prospect-details-card h3 {
         font-size: 1rem;
         font-weight: 600;
         margin: 0;
@@ -1170,7 +1583,7 @@ st.markdown("""
         background-image: linear-gradient(135deg, var(--gp-primary) 0%, var(--gp-accent) 100%) !important;
         z-index: 1;
     }
-    .business-details-card h3::before {
+    .prospect-details-card h3::before {
         content: '🏢';
         font-size: 0.9rem;
         background: rgba(255, 255, 255, 0.2);
@@ -1182,7 +1595,7 @@ st.markdown("""
         border-radius: 12px;
         backdrop-filter: blur(10px);
     }
-    .business-details-card h3::after {
+    .prospect-details-card h3::after {
         content: '';
         position: absolute;
         bottom: 0;
@@ -1194,7 +1607,7 @@ st.markdown("""
     }
     
     /* Data Visualization Cards style - grouped dashboard sections */
-    .business-data-dashboard {
+    .prospect-data-dashboard {
         padding: 0.5rem;
         display: flex;
         flex-direction: column;
@@ -1246,8 +1659,8 @@ st.markdown("""
         border-radius: var(--gp-radius-sm);
     }
     
-    /* Salesforce push status in header */
-    .business-name-container {
+    /* sf_leads table write status in header */
+    .prospect-name-container {
         display: flex;
         align-items: center;
         gap: 0.5rem;
@@ -1341,7 +1754,7 @@ st.markdown("""
     }
 
     /* Linear Timeline/Process Style - Enhanced with component system */
-    .business-data-timeline {
+    .prospect-data-timeline {
         position: relative;
         padding: 30px 20px;
         border-radius: var(--gp-radius-2xl);
@@ -1350,7 +1763,7 @@ st.markdown("""
         overflow: hidden;
     }
     
-    .business-data-timeline::before {
+    .prospect-data-timeline::before {
         content: '';
         position: absolute;
         left: 40px;
@@ -1739,12 +2152,63 @@ def get_filtered_dataframe(df, filters, display_columns=None):
             if max_val is not None:
                 filtered_df = filtered_df[filtered_df[col_name] <= max_val]
         elif filter_cfg["type"] == "selectbox":
-            # B2B/B2C logic
+            # Legacy handling for non-checkbox selectbox filters
             if "Exclude" in value:
                 filtered_df = filtered_df[filtered_df[col_name] == 0]
             elif "Show only" in value:
                 filtered_df = filtered_df[filtered_df[col_name] == 1]
             # "Include" means no filter
+        elif filter_cfg["type"] == "checkbox":
+            # Handle checkbox filters (PROSPECT_TYPE, CONTACT_INFO_FILTER, customer_status)
+            if isinstance(value, dict):
+                checked_options = [option for option, checked in value.items() if checked]
+                if checked_options:
+                    if key == "customer_status":
+                        # Customer status logic
+                        mask = pd.Series(False, index=filtered_df.index)
+                        for customer_type in checked_options:
+                            if customer_type == "Current Customers":
+                                mask |= (filtered_df[col_name] == 1)
+                            elif customer_type == "Not Current Customers":
+                                mask |= (filtered_df[col_name] == 0)
+                        filtered_df = filtered_df[mask]
+                    elif key == "PROSPECT_TYPE":
+                        # Prospect type logic
+                        mask = pd.Series(False, index=filtered_df.index)
+                        for prospect_type in checked_options:
+                            if prospect_type == "B2B" and "IS_B2B" in filtered_df.columns:
+                                mask |= (filtered_df["IS_B2B"] == 1)
+                            elif prospect_type == "B2C" and "IS_B2C" in filtered_df.columns:
+                                mask |= (filtered_df["IS_B2C"] == 1)
+                        filtered_df = filtered_df[mask]
+        elif filter_cfg["type"] == "checkbox":
+            # Handle checkbox filters (like CONTACT_INFO_FILTER)
+            if key == "CONTACT_INFO_FILTER" and isinstance(value, dict):
+                checked_options = [option for option, checked in value.items() if checked]
+                if checked_options:
+                    # Create conditions for each checked option
+                    mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
+                    for contact_type in checked_options:
+                        if contact_type == "Phone Contact" and "HAS_PHONE_CONTACT" in filtered_df.columns:
+                            mask |= (filtered_df["HAS_PHONE_CONTACT"] == True)
+                        elif contact_type == "Email Contact" and "HAS_EMAIL_CONTACT" in filtered_df.columns:
+                            mask |= (filtered_df["HAS_EMAIL_CONTACT"] == True)
+                        elif contact_type == "Address" and "HAS_ADDRESS_INFO" in filtered_df.columns:
+                            mask |= (filtered_df["HAS_ADDRESS_INFO"] == True)
+                    # Apply the combined mask
+                    filtered_df = filtered_df[mask]
+            elif key == "PROSPECT_TYPE" and isinstance(value, dict):
+                checked_options = [option for option, checked in value.items() if checked]
+                if checked_options:
+                    # Create conditions for each checked option
+                    mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
+                    for prospect_type in checked_options:
+                        if prospect_type == "B2B" and "IS_B2B" in filtered_df.columns:
+                            mask |= (filtered_df["IS_B2B"] == 1)
+                        elif prospect_type == "B2C" and "IS_B2C" in filtered_df.columns:
+                            mask |= (filtered_df["IS_B2C"] == 1)
+                    # Apply the combined mask
+                    filtered_df = filtered_df[mask]
     # Ensure IS_B2B column is always present in output
     if "IS_B2B" not in filtered_df.columns and "IS_B2B" in df.columns:
         filtered_df["IS_B2B"] = df["IS_B2B"]
@@ -1759,7 +2223,7 @@ def get_filtered_dataframe(df, filters, display_columns=None):
 
 if not st.session_state["sidebar_collapsed"]:
     with st.sidebar:
-        st.image("https://cdn.bfldr.com/ZGS6MXDP/at/2cs39569fprccp99mf97np54/global-logo-color", use_container_width=True)
+        st.image("https://cdn.bfldr.com/SXSS6YA/at/99mh6vs475xtvxqvgqmw6ss/gpguide_logo_3", use_container_width=True)
         st.markdown("<h1 class='gp-center-text gp-font-sm gp-color-primary' style='margin: 0rem 0; font-family: var(--font-family-primary);'>Prospecting Portal</h1>", unsafe_allow_html=True)
 
 
@@ -1792,11 +2256,25 @@ def save_search(user_id, search_name, filters):
                     cleaned_filters[key] = value
                 else:
                     cleaned_filters[key] = []
-            elif config.get("type") == "checkbox":
-                if isinstance(value, bool):
+            elif config.get("type") == "multiselect":
+                if isinstance(value, list) and all(isinstance(v, str) and v in config.get("options", []) for v in value):
                     cleaned_filters[key] = value
                 else:
-                    show_error_message("Invalid checkbox filter", f"for {key}: {value} (expected boolean)")
+                    cleaned_filters[key] = []
+            elif config.get("type") == "checkbox":
+                if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, bool) for k, v in value.items()):
+                    # Validate that all keys are valid options
+                    valid_options = set(config.get("options", []))
+                    if all(k in valid_options for k in value.keys()):
+                        cleaned_filters[key] = value
+                    else:
+                        show_error_message("Invalid checkbox options", f"for {key}: {list(value.keys())} (expected options from {list(valid_options)})")
+                        return
+                elif isinstance(value, bool):
+                    # Legacy single boolean support
+                    cleaned_filters[key] = value
+                else:
+                    show_error_message("Invalid checkbox filter", f"for {key}: {value} (expected dictionary of option:boolean pairs)")
                     return
             elif config.get("type") == "text":
                 if isinstance(value, str):
@@ -1882,8 +2360,10 @@ def load_search(user_id, search_name):
                         st.session_state["filters"][key] = [None, None]
                     elif STATIC_FILTERS[key]["type"] == "dropdown":
                         st.session_state["filters"][key] = []
+                    elif STATIC_FILTERS[key]["type"] == "multiselect":
+                        st.session_state["filters"][key] = []
                     elif STATIC_FILTERS[key]["type"] == "checkbox":
-                        st.session_state["filters"][key] = False
+                        st.session_state["filters"][key] = {option: False for option in STATIC_FILTERS[key]["options"]}
                     elif STATIC_FILTERS[key]["type"] == "selectbox":
                         st.session_state["filters"][key] = STATIC_FILTERS[key]["options"][0]
                     elif STATIC_FILTERS[key]["type"] == "number":
@@ -1904,9 +2384,29 @@ def load_search(user_id, search_name):
                             st.session_state["filters"][key] = [None, None]
                     elif STATIC_FILTERS[key]["type"] == "number":
                         try:
-                            st.session_state["filters"][key] = float(value) if value is not None else STATIC_FILTERS[key].get("default", 0)
+                            # Check if the filter expects integer values
+                            if all(isinstance(STATIC_FILTERS[key].get(param), int) for param in ["min_value", "max_value", "default"]):
+                                # Convert to int if all parameter types are integers
+                                st.session_state["filters"][key] = int(float(value)) if value is not None else STATIC_FILTERS[key].get("default", 0)
+                            else:
+                                # Convert to float for other numeric filters
+                                st.session_state["filters"][key] = float(value) if value is not None else STATIC_FILTERS[key].get("default", 0)
                         except (ValueError, TypeError):
                             st.session_state["filters"][key] = STATIC_FILTERS[key].get("default", 0)
+                    elif STATIC_FILTERS[key]["type"] == "checkbox":
+                        if isinstance(value, dict):
+                            # Ensure all options exist and have boolean values
+                            checkbox_dict = {option: False for option in STATIC_FILTERS[key]["options"]}
+                            for option, checked in value.items():
+                                if option in checkbox_dict and isinstance(checked, bool):
+                                    checkbox_dict[option] = checked
+                            st.session_state["filters"][key] = checkbox_dict
+                        elif isinstance(value, bool):
+                            # Legacy single boolean - convert to new format
+                            st.session_state["filters"][key] = {option: False for option in STATIC_FILTERS[key]["options"]}
+                        else:
+                            # Invalid format - use default
+                            st.session_state["filters"][key] = {option: False for option in STATIC_FILTERS[key]["options"]}
                     else:
                         st.session_state["filters"][key] = value
             st.session_state["last_update_time"] = time.time()
@@ -1942,6 +2442,14 @@ def create_cache_key(column, dependent_filters):
                 else:
                     min_val, max_val = None, None
                 val_str = f"{min_val or ''}_{max_val or ''}"
+            elif STATIC_FILTERS[dep_col]["type"] == "checkbox":
+                # Handle checkbox filters properly
+                if isinstance(dep_val, dict):
+                    # Create a consistent string representation of checked options
+                    checked_options = [option for option, checked in sorted(dep_val.items()) if checked]
+                    val_str = ",".join(checked_options) if checked_options else "none"
+                else:
+                    val_str = str(dep_val)
             elif STATIC_FILTERS[dep_col]["type"] == "text":
                 val_str = str(dep_val)
             else:
@@ -2016,9 +2524,10 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
 
     try:
         logical_columns = [
-            "IDENTIFIER", "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE",
+            "PROSPECT_ID", "IDENTIFIER", "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE",
             "REVENUE", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C", "LONGITUDE", "LATITUDE", "FULL_ADDRESS", "WEBSITE", "IS_CURRENT_CUSTOMER", "DATA_AGG_UID", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE",
-            "TOP10_CONTACTS", "CONTACT_NATIONAL_DNC", "INTERNAL_DNC", "HAS_CONTACT_INFO"
+            "TOP10_CONTACTS", "CONTACT_NATIONAL_DNC", "INTERNAL_DNC", "HAS_CONTACT_INFO", "HAS_PHONE_CONTACT", "HAS_EMAIL_CONTACT",
+            "HAS_ADDRESS_INFO", "ACTIVE_PRODUCTS", "PRODUCT_FAMILY"
             ]
         logical_to_actual = {"MCC_CODE": "MCC_CODE", "B2B": "IS_B2B", "B2C": "IS_B2C"}
         # All columns except TOP10_CONTACTS come from main table, TOP10_CONTACTS comes from tc
@@ -2085,14 +2594,23 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
             if column in ["LOCATION_ADDRESS", "RADIUS_MILES"]:
                 continue
                 
-            if column == "customer_status":
-                if value == "Current Customers Only":
-                    where_clauses.append("IS_CURRENT_CUSTOMER = ?")
-                    params.append(True)
-                elif value == "Non-Customers Only":
-                    where_clauses.append("IS_CURRENT_CUSTOMER = ?")
-                    params.append(False)
-                # If "Show both...", do not filter
+            if column == "customer_status" and isinstance(value, dict):
+                # Handle new checkbox customer status filter logic
+                # Only add filter if at least one checkbox is checked
+                checked_options = [option for option, checked in value.items() if checked]
+                if checked_options:
+                    customer_conditions = []
+                    for customer_type in checked_options:
+                        if customer_type == "Current Customers":
+                            customer_conditions.append("IS_CURRENT_CUSTOMER = ?")
+                            params.append(True)
+                        elif customer_type == "Not Current Customers":
+                            customer_conditions.append("IS_CURRENT_CUSTOMER = ?")
+                            params.append(False)
+                    
+                    # If any customer conditions were added, combine them with OR
+                    if customer_conditions:
+                        where_clauses.append(f"({' OR '.join(customer_conditions)})")
             elif column in STATIC_FILTERS:
                 filter_type = STATIC_FILTERS[column]["type"]
                 if filter_type == "dropdown" and value:
@@ -2109,8 +2627,25 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
                     if max_val is not None:
                         where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} <= ?")
                         params.append(max_val)
+                elif filter_type == "checkbox" and column == "PROSPECT_TYPE" and isinstance(value, dict):
+                    # Handle new checkbox prospect type filter logic
+                    # Only add filter if at least one checkbox is checked
+                    checked_options = [option for option, checked in value.items() if checked]
+                    if checked_options:
+                        prospect_type_conditions = []
+                        for prospect_type in checked_options:
+                            if prospect_type == "B2B":
+                                prospect_type_conditions.append("IS_B2B = ?")
+                                params.append(1)
+                            elif prospect_type == "B2C":
+                                prospect_type_conditions.append("IS_B2C = ?")
+                                params.append(1)
+                        
+                        # If any prospect type conditions were added, combine them with OR
+                        if prospect_type_conditions:
+                            where_clauses.append(f"({' OR '.join(prospect_type_conditions)})")
                 elif filter_type == "selectbox" and column in ["B2B", "B2C"]:
-                    # Handle B2B/B2C selectbox logic
+                    # Legacy B2B/B2C selectbox handling for backward compatibility
                     if value == "Exclude B2B" or value == "Exclude B2C":
                         where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
                         params.append(0)
@@ -2119,7 +2654,7 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
                         params.append(1)
                     # If "Include ...", do not filter
                 elif filter_type == "selectbox" and column == "HAS_CONTACT_INFO":
-                    # Handle HAS_CONTACT_INFO selectbox logic
+                    # Legacy handling - should be replaced by CONTACT_INFO_FILTER
                     if value == "Only Prospects with Contact Info":
                         where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
                         params.append(True)
@@ -2127,8 +2662,50 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
                         where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
                         params.append(False)
                     # If "Show All Prospects", do not filter
-                elif filter_type == "checkbox" and value:
-                    # Legacy checkbox handling (if any other checkboxes exist)
+                elif filter_type == "checkbox" and column == "CONTACT_INFO_FILTER" and isinstance(value, dict):
+                    # Handle new checkbox contact info filter logic
+                    # Only add filter if at least one checkbox is checked
+                    checked_options = [option for option, checked in value.items() if checked]
+                    if checked_options:
+                        contact_conditions = []
+                        for contact_type in checked_options:
+                            if contact_type == "Phone Contact":
+                                contact_conditions.append("HAS_PHONE_CONTACT = ?")
+                                params.append(True)
+                            elif contact_type == "Email Contact":
+                                contact_conditions.append("HAS_EMAIL_CONTACT = ?")
+                                params.append(True)
+                            elif contact_type == "Address":
+                                contact_conditions.append("HAS_ADDRESS_INFO = ?")
+                                params.append(True)
+                        
+                        # If any contact conditions were added, combine them with OR
+                        if contact_conditions:
+                            where_clauses.append(f"({' OR '.join(contact_conditions)})")
+                elif filter_type == "multiselect" and column == "CONTACT_INFO_FILTER" and value:
+                    # Legacy multiselect handling for backward compatibility
+                    # If "All Prospects" is selected, don't add any contact filters
+                    if "All Prospects" not in value:
+                        contact_conditions = []
+                        for contact_type in value:
+                            if contact_type == "Prospects with Any Contact Info":
+                                contact_conditions.append("HAS_CONTACT_INFO = ?")
+                                params.append(True)
+                            elif contact_type == "Prospects with Phone Contact":
+                                contact_conditions.append("HAS_PHONE_CONTACT = ?")
+                                params.append(True)
+                            elif contact_type == "Prospects with Email Contact":
+                                contact_conditions.append("HAS_EMAIL_CONTACT = ?")
+                                params.append(True)
+                            elif contact_type == "Prospects with Address Info":
+                                contact_conditions.append("HAS_ADDRESS_INFO = ?")
+                                params.append(True)
+                        
+                        # If any contact conditions were added, combine them with OR
+                        if contact_conditions:
+                            where_clauses.append(f"({' OR '.join(contact_conditions)})")
+                elif filter_type == "checkbox" and column != "CONTACT_INFO_FILTER" and column != "PROSPECT_TYPE" and value:
+                    # Legacy checkbox handling (for simple boolean checkboxes)
                     where_clauses.append(f"{STATIC_FILTERS[column]['column_name']} = ?")
                     params.append(True)
                 elif filter_type == "text" and value.strip():
@@ -2145,22 +2722,24 @@ def fetch_filtered_data(filters, _cache_key, page_size, current_page, fetch_all=
             condition = " WHERE " + " AND ".join(where_clauses)
             count_query += condition
             query += condition
+        
         total_records = execute_sql_query(count_query, params=params, operation_name="fetch_filtered_data_count", return_single_value=True)
-        if "limit_warning" in st.session_state:
-            del st.session_state["limit_warning"]
         query += f" ORDER BY DBA_NAME"
+        
+        # Don't set warning here - let the calling function handle it
+        original_total = total_records
         if total_records > MAX_RESULTS:
-            st.session_state["limit_warning"] = f"Result set contains {total_records} records, which exceeds the limit of {MAX_RESULTS}. Displaying the first {MAX_RESULTS} records."
             query += f" LIMIT {MAX_RESULTS}"
             total_records = min(total_records, MAX_RESULTS)
-        elif not fetch_all:
+            
+        if not fetch_all and original_total <= MAX_RESULTS:
             offset = calculate_sql_offset(current_page, page_size)
             query += f" LIMIT {page_size} OFFSET {offset}"
         df = execute_sql_query(query, params=params, operation_name="fetch_filtered_data")
-        return df, total_records
+        return df, total_records, original_total
     except Exception as e:
         show_error_message("Error fetching filtered data", f"{str(e)}\nQuery: {query}\nParams: {params}")
-        return pd.DataFrame(), 0
+        return pd.DataFrame(), 0, 0
 
 def display_filter_summary(filters):
     active_filters = []
@@ -2172,6 +2751,8 @@ def display_filter_summary(filters):
         config = STATIC_FILTERS.get(column, {})
         label = config.get("label", column)
         if config.get("type") == "dropdown" and value:
+            active_filters.append(f"{label}: {', '.join(map(str, value))}")
+        elif config.get("type") == "multiselect" and value:
             active_filters.append(f"{label}: {', '.join(map(str, value))}")
         elif config.get("type") == "range" and value != [None, None]:
             min_val, max_val = value
@@ -2208,68 +2789,8 @@ def display_filter_summary(filters):
     # Show search center status even when no other filters are active
     show_search_center_info = "search_center_location" in st.session_state
     
-    if active_filters or has_results or show_search_center_info:
-        with st.expander(f"Active Search Filters ({len(active_filters)})", expanded=False):
-
-            chips_per_row = CHIPS_PER_ROW  # More chips per row for compactness
-            for i in range(0, len(active_filters), chips_per_row):
-                cols = st.columns(chips_per_row)
-                for j, filter_str in enumerate(active_filters[i:i+chips_per_row]):
-                    with cols[j]:
-                        if ":" in filter_str:
-                            parts = filter_str.split(":", 1)  # Split on first colon only
-                            filter_label = parts[0].strip()
-                            filter_value = parts[1].strip()
-                            
-                            if filter_label.lower() == "zip code" and "contains" in filter_value.lower():
-                                import re
-                                zip_match = re.search(r"'([^']+)'", filter_value)
-                                if zip_match:
-                                    filter_value = zip_match.group(1)
-                            styled_filter = f"{filter_label}: <strong>{filter_value}</strong>"
-                        else:
-                            styled_filter = filter_str
-                        
-                        st.markdown(f"""
-                        <div style="
-                            background: linear-gradient(135deg, #f8f8f8 0%, #ffffff 100%);
-                            border: 1px solid #c4c4c4;
-                            border-radius: 12px;
-                            padding: 0.25rem 0.5rem;
-                            font-family: 'DM Sans', sans-serif;
-                            font-size: 0.75rem;
-                            color: #0c0c0c;
-                            text-align: center;
-                            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-                            border-left: 2px solid #262AFF;
-                            margin-bottom: 0.25rem;
-                            line-height: 1.2;
-                        ">
-                            {styled_filter}
-                        </div>
-                        """, unsafe_allow_html=True)
-            
-            # Show search center information if active
-            if "search_center_location" in st.session_state:
-                search_center = st.session_state["search_center_location"]
-                st.markdown("**🎯 Search Center Location:**")
-                st.markdown(f"""
-                <div style="
-                    background: linear-gradient(135deg, #262AFF 0%, #1CABFF 100%);
-                    color: white;
-                    border-radius: 12px;
-                    padding: 12px 16px;
-                    margin: 8px 0;
-                    font-family: 'DM Sans', sans-serif;
-                    font-size: 0.85rem;
-                    box-shadow: 0 2px 8px rgba(38, 42, 255, 0.15);
-                ">
-                    📍 <strong>{search_center['address']}</strong><br>
-                    🔍 Search radius: {search_center['radius_miles']} miles<br>
-                    📊 This location will be highlighted on the map
-                </div>
-                """, unsafe_allow_html=True)
-    else:
+    # Only show the "no filters" message when there are no active filters
+    if not active_filters and not has_results and not show_search_center_info:
         filtered_df = st.session_state.get("filtered_df", None)
         if filtered_df is None or filtered_df.empty:
             st.markdown("""
@@ -2315,37 +2836,71 @@ def display_filter_summary(filters):
             
             <div class="no-filters-container">
                 <p class="no-filters-text">No search filters currently applied</p>
-                <p class="no-filters-subtext">Use the sidebar to narrow down your business prospects</p>
+                <p class="no-filters-subtext">Use the sidebar to narrow down your prospect prospects</p>
             </div>
             """, unsafe_allow_html=True)
-            
-def apply_b2b_b2c_filters(df, filters):
-    # B2B logic
-    b2b_choice = filters.get("B2B", "Include B2B & B2C")
-    if b2b_choice == "Exclude B2B":
-        df = df[df["IS_B2B"] == 0]
-    elif b2b_choice == "Only B2B":
-        df = df[df["IS_B2B"] == 1]
-    # B2C logic
-    b2c_choice = filters.get("B2C", "Include B2B & B2C")
-    if b2c_choice == "Exclude B2C":
-        df = df[df["IS_B2C"] == 0]
-    elif b2c_choice == "Only B2C":
-        df = df[df["IS_B2C"] == 1]
-    return df
 
-def add_businesses_to_salesforce(business_df):
-
-    if business_df.empty:
-        return 0
-    business_ids = business_df.index.tolist()
+def add_prospectes_to_salesforce(prospect_df):
+    """
+    Add multiple prospects to Salesforce by inserting into sf_leads table.
+    
+    Args:
+        prospect_df: DataFrame containing prospects to add (uses index as prospect ID)
+        
+    Returns:
+        dict: {
+            'newly_added': int, 
+            'duplicates': int, 
+            'errors': int, 
+            'already_tracked': int,
+            'messages': list
+        }
+    """
+    if prospect_df.empty:
+        return {
+            'newly_added': 0,
+            'duplicates': 0,
+            'errors': 0,
+            'already_tracked': 0,
+            'messages': ['No prospects provided']
+        }
+    
+    # Get list of actual PROSPECT_IDs from the DataFrame
+    prospect_ids = []
+    for _, row in prospect_df.iterrows():
+        prospect_id = row.get("PROSPECT_ID") or row.get("IDENTIFIER")
+        if prospect_id:
+            prospect_ids.append(prospect_id)
+    
     newly_added = 0
+    duplicates = 0
+    errors = 0
+    already_tracked = 0
+    messages = []
     
-    for business_id in business_ids:
-        if add_business_to_salesforce(business_id):
+    for prospect_id in prospect_ids:
+        result = add_prospect_to_salesforce(prospect_id)
+        
+        if result['success']:
             newly_added += 1
+            messages.append(f"✅ {result['message']}")
+        elif result['is_duplicate']:
+            duplicates += 1
+            messages.append(f"⚠️ {result['message']}")
+        elif result['already_tracked']:
+            already_tracked += 1
+            messages.append(f"ℹ️ {result['message']}")
+        else:
+            errors += 1
+            messages.append(f"❌ {result['message']}")
     
-    return newly_added
+    return {
+        'newly_added': newly_added,
+        'duplicates': duplicates,
+        'errors': errors,
+        'already_tracked': already_tracked,
+        'messages': messages
+    }
 
 def create_sidebar_filters():
     def generate_text_filter(column, config, placeholder=None):
@@ -2378,7 +2933,7 @@ def create_sidebar_filters():
         dependent_filters = {
             k: st.session_state["filters"].get(k, "")
             for k in filter_columns
-            if k != column and k not in ["B2B", "B2C", "LOCATION_ADDRESS", "RADIUS_MILES"] and is_filter_active(k, st.session_state["filters"].get(k, ""))
+            if k != column and k not in ["PROSPECT_TYPE", "LOCATION_ADDRESS", "RADIUS_MILES"] and is_filter_active(k, st.session_state["filters"].get(k, ""))
         }
         
         cache_key = create_cache_key(column, dependent_filters)
@@ -2499,7 +3054,7 @@ def create_sidebar_filters():
             """, unsafe_allow_html=True)
             
             # Location Filters Expander - Radius Search
-            with st.expander("Location", expanded=True):
+            with st.expander("Search Location", expanded=True):
                 # Address/ZIP input for radius search
                 location_address = st.text_input(
                     "Address or ZIP Code",
@@ -2510,11 +3065,16 @@ def create_sidebar_filters():
                 )
                 
                 # Radius selection
+                current_radius = st.session_state["filters"].get("RADIUS_MILES", STATIC_FILTERS["RADIUS_MILES"]["default"])
+                # Ensure the value is an integer to match min_value, max_value, and step types
+                if isinstance(current_radius, float):
+                    current_radius = int(current_radius)
+                
                 radius_miles = st.number_input(
                     "Search Radius (Miles)",
                     min_value=STATIC_FILTERS["RADIUS_MILES"]["min_value"],
                     max_value=STATIC_FILTERS["RADIUS_MILES"]["max_value"],
-                    value=st.session_state["filters"].get("RADIUS_MILES", STATIC_FILTERS["RADIUS_MILES"]["default"]),
+                    value=current_radius,
                     step=1,
                     key="radius_miles_filter",
                     help="Set the search radius in miles from the specified location."
@@ -2535,79 +3095,115 @@ def create_sidebar_filters():
                 filters["LOCATION_ADDRESS"] = location_address.strip()
                 filters["RADIUS_MILES"] = radius_miles
             
-            # Business Filters Expander
-            with st.expander("Business Details", expanded=False):
-                # Business name text filter
+            # prospect Filters Expander
+            with st.expander("Prospect Details", expanded=False):
+
+                # prospect name text filter
                 for column in ["DBA_NAME"]:
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "text":
                         placeholder = f"Search {STATIC_FILTERS[column]['label'].lower()} (e.g., Taco Bell)"
-                        filters[column] = generate_text_filter(column, STATIC_FILTERS[column], placeholder)
+                        filters[column] = generate_text_filter(column, STATIC_FILTERS[column], placeholder)                
                 
-                # Business dropdown filters
+                # Contact Info Filter as checkboxes
+                contact_config = STATIC_FILTERS["CONTACT_INFO_FILTER"]
+                current_contact_value = st.session_state["filters"].get("CONTACT_INFO_FILTER", {})
+                
+                # Ensure current value is a dictionary
+                if not isinstance(current_contact_value, dict):
+                    current_contact_value = {option: False for option in contact_config["options"]}
+                
+                # Ensure all options exist in the dictionary
+                for option in contact_config["options"]:
+                    if option not in current_contact_value:
+                        current_contact_value[option] = False
+                
+                st.markdown(f"**{contact_config['label']}**")
+                
+                # Create checkboxes for each option
+                contact_selected = {}
+                for option in contact_config["options"]:
+                    contact_selected[option] = st.checkbox(
+                        option,
+                        value=current_contact_value.get(option, False),
+                        key=f"contact_info_filter_checkbox_{option.replace(' ', '_').lower()}",
+                        help=f"Filter to show only prospects with {option.lower()}."
+                    )
+                
+                filters["CONTACT_INFO_FILTER"] = contact_selected
+                if contact_selected != st.session_state["filters"]["CONTACT_INFO_FILTER"]:
+                    st.session_state["filters"]["CONTACT_INFO_FILTER"] = contact_selected
+                    st.session_state["last_update_time"] = time.time()
+                    reset_to_first_page()
+                
+                # Customer Status Filter as checkboxes
+                customer_config = STATIC_FILTERS["customer_status"]
+                current_customer_value = st.session_state["filters"].get("customer_status", {})
+                
+                # Ensure current value is a dictionary
+                if not isinstance(current_customer_value, dict):
+                    current_customer_value = {option: False for option in customer_config["options"]}
+                
+                # Ensure all options exist in the dictionary
+                for option in customer_config["options"]:
+                    if option not in current_customer_value:
+                        current_customer_value[option] = False
+                
+                st.markdown(f"**{customer_config['label']}**")
+                
+                # Create checkboxes for each option
+                customer_selected = {}
+                for option in customer_config["options"]:
+                    customer_selected[option] = st.checkbox(
+                        option,
+                        value=current_customer_value.get(option, False),
+                        key=f"customer_status_filter_checkbox_{option.replace(' ', '_').lower()}",
+                        help=f"Filter to show only {option.lower()}."
+                    )
+                
+                filters["customer_status"] = customer_selected
+                if customer_selected != st.session_state["filters"]["customer_status"]:
+                    st.session_state["filters"]["customer_status"] = customer_selected
+                    st.session_state["last_update_time"] = time.time()
+                    reset_to_first_page()
+                
+                # prospect dropdown filters
                 for column in ["PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE"]:
                     if column in STATIC_FILTERS and STATIC_FILTERS[column]["type"] == "dropdown":
                         filters[column] = generate_dropdown_filter(column, STATIC_FILTERS[column])
                 
-                # Business Type Filters (B2B/B2C) as selectboxes
-                for column in ["B2B", "B2C"]:
-                    config = STATIC_FILTERS[column]
-                    current_value = st.session_state["filters"].get(column, config["options"][0])
-                    if current_value not in config["options"]:
-                        current_value = config["options"][0]
-                    selected = st.selectbox(
-                        config["label"],
-                        config["options"],
-                        index=config["options"].index(current_value),
-                        key=f"{column}_filter_selectbox",
-                        help="Filter for Business to Business or Business to Customer accounts."
-                    )
-                    filters[column] = selected
-                    if selected != st.session_state["filters"][column]:
-                        st.session_state["filters"][column] = selected
-                        st.session_state["last_update_time"] = time.time()
-                        reset_to_first_page()
+                # Prospect Type Filter as checkboxes
+                prospect_type_config = STATIC_FILTERS["PROSPECT_TYPE"]
+                current_prospect_type_value = st.session_state["filters"].get("PROSPECT_TYPE", {})
                 
-                # Contact Info Filter as selectbox
-                contact_config = STATIC_FILTERS["HAS_CONTACT_INFO"]
-                current_contact_value = st.session_state["filters"].get("HAS_CONTACT_INFO", contact_config["options"][0])
-                if current_contact_value not in contact_config["options"]:
-                    current_contact_value = contact_config["options"][0]
-                contact_selected = st.selectbox(
-                    contact_config["label"],
-                    contact_config["options"],
-                    index=contact_config["options"].index(current_contact_value),
-                    key="has_contact_info_filter_selectbox",
-                    help="Filter prospects based on whether they have contact information available."
-                )
-                filters["HAS_CONTACT_INFO"] = contact_selected
-                if contact_selected != st.session_state["filters"]["HAS_CONTACT_INFO"]:
-                    st.session_state["filters"]["HAS_CONTACT_INFO"] = contact_selected
+                # Ensure current value is a dictionary
+                if not isinstance(current_prospect_type_value, dict):
+                    current_prospect_type_value = {option: False for option in prospect_type_config["options"]}
+                
+                # Ensure all options exist in the dictionary
+                for option in prospect_type_config["options"]:
+                    if option not in current_prospect_type_value:
+                        current_prospect_type_value[option] = False
+                
+                st.markdown(f"**{prospect_type_config['label']}**")
+                
+                # Create checkboxes for each option
+                prospect_type_selected = {}
+                for option in prospect_type_config["options"]:
+                    prospect_type_selected[option] = st.checkbox(
+                        option,
+                        value=current_prospect_type_value.get(option, False),
+                        key=f"prospect_type_filter_checkbox_{option.replace(' ', '_').lower()}",
+                        help=f"Filter to show only {option} prospects."
+                    )
+                
+                filters["PROSPECT_TYPE"] = prospect_type_selected
+                if prospect_type_selected != st.session_state["filters"]["PROSPECT_TYPE"]:
+                    st.session_state["filters"]["PROSPECT_TYPE"] = prospect_type_selected
                     st.session_state["last_update_time"] = time.time()
                     reset_to_first_page()
-                
-                # Current customers section
-                st.markdown("**Customer Status**")
-                customer_status_options = [
-                    "Current and Non-Customers",
-                    "Current Customers Only",
-                    "Non-Customers Only"
-                ]
-                current_customer_status = st.session_state["filters"].get("customer_status", customer_status_options[0])
-                if current_customer_status not in customer_status_options:
-                    current_customer_status = customer_status_options[0]
-                customer_status = st.selectbox(
-                    "Current Customer Status",
-                    customer_status_options,
-                    index=customer_status_options.index(current_customer_status),
-                    key="customer_status_filter_selectbox",
-                    help="Filter by current customer status."
-                )
-                filters["customer_status"] = customer_status
-                if customer_status != st.session_state["filters"].get("customer_status", customer_status_options[0]):
-                    st.session_state["filters"]["customer_status"] = customer_status
             
             # Metrics Filters Expander
-            with st.expander("Metrics", expanded=False):
+            with st.expander("Prospect Metrics", expanded=False):
                 # Range filters
                 for column, config in STATIC_FILTERS.items():
                     if config["type"] == "range":
@@ -2667,32 +3263,41 @@ def create_sidebar_filters():
                         [None, None] if STATIC_FILTERS[col]["type"] == "range" else
                         STATIC_FILTERS[col]["options"][0] if STATIC_FILTERS[col]["type"] == "selectbox" else
                         STATIC_FILTERS[col]["default"] if STATIC_FILTERS[col]["type"] == "number" else
+                        {option: False for option in STATIC_FILTERS[col]["options"]} if STATIC_FILTERS[col]["type"] == "checkbox" else
                         ""
                     )
                     for col in STATIC_FILTERS
                 }
-                # Reset Current Customer Status filter to default
-                st.session_state["filters"]["customer_status"] = "Current and Non-Customers"
                 st.session_state["last_update_time"] = 0
                 reset_to_first_page()
-                st.session_state["filtered_df"] = pd.DataFrame()
+                # Clear filtered_df completely to ensure "no filters" message appears
+                if "filtered_df" in st.session_state:
+                    del st.session_state["filtered_df"]
                 st.session_state["active_filters"] = {}
                 st.session_state["page_size"] = DEFAULT_PAGE_SIZE
                 st.session_state["total_records"] = 0
                 st.session_state["confirm_delete_search"] = False
                 st.session_state["search_to_delete"] = None
-                st.session_state["filter_update_trigger"] = {col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] == "dropdown"}
+                st.session_state["filter_update_trigger"] = {col: 0 for col in STATIC_FILTERS if STATIC_FILTERS[col]["type"] in ["dropdown", "multiselect"]}
                 st.session_state["search_name"] = ""
                 st.session_state["selected_search"] = ""
+                # Clear any cached data
+                if "full_df" in st.session_state:
+                    del st.session_state["full_df"]
+                # Clear search center location to reset location-based searches
+                if "search_center_location" in st.session_state:
+                    del st.session_state["search_center_location"]
+                # Force data refresh
+                st.session_state["last_update_time"] = time.time()
                 increment_session_state_counter('reset_counter')
                 if "map_view_state" in st.session_state:
                     del st.session_state.map_view_state
                 if "previous_point_selector" in st.session_state:
                     del st.session_state.previous_point_selector
-                if "business_multiselect" in st.session_state:
-                    del st.session_state.business_multiselect
-                st.session_state["business_search_term"] = ""
-                st.session_state["selected_business_indices"] = []
+                if "prospect_multiselect" in st.session_state:
+                    del st.session_state.prospect_multiselect
+                st.session_state["prospect_search_term"] = ""
+                st.session_state["selected_prospect_indices"] = []
                 st.session_state["radius_scale"] = DEFAULT_RADIUS_SCALE
                 st.session_state["geocode_cache"] = {}  # Clear geocoding cache
                 st.rerun()
@@ -2710,7 +3315,7 @@ def create_sidebar_filters():
                 st.session_state["radius_scale"] = 1.0
                 # Standardize output columns for sidebar filters
                 display_columns = [
-                    "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "B2B", "B2C"
+                    "DBA_NAME", "ADDRESS", "CITY", "STATE", "ZIP", "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "PROSPECT_TYPE"
                 ]
                 st.session_state["filtered_df"] = get_filtered_dataframe(
                     st.session_state["full_df"] if "full_df" in st.session_state else pd.DataFrame(),
@@ -2741,10 +3346,24 @@ def create_sidebar_filters():
                 
                 saved_searches = load_saved_searches(user_id)
                 load_search_key = f"load_search_{get_load_search_counter()}_{st.session_state['reset_counter']}"
+                
+                # Build the options list
+                search_options = [""] + [s["SEARCH_NAME"] for s in saved_searches]
+                
+                # Calculate safe index
+                current_selection = st.session_state.get("selected_search", "")
+                try:
+                    if current_selection and current_selection in search_options:
+                        selected_index = search_options.index(current_selection)
+                    else:
+                        selected_index = 0
+                except (ValueError, TypeError):
+                    selected_index = 0
+                
                 st.session_state["selected_search"] = st.selectbox(
                     "Load Saved Search",
-                    options=[""] + [s["SEARCH_NAME"] for s in saved_searches],
-                    index=0 if not st.session_state["selected_search"] else [s["SEARCH_NAME"] for s in saved_searches].index(st.session_state["selected_search"]) + 1 if st.session_state["selected_search"] in [s["SEARCH_NAME"] for s in saved_searches] else 0,
+                    options=search_options,
+                    index=selected_index,
                     placeholder="Select a saved search",
                     key=load_search_key
                 )
@@ -2930,9 +3549,9 @@ def get_current_map_style():
     """Get the current map style from session state with default fallback"""
     return st.session_state.get("map_style_selector", ":material/dark_mode:")
 
-def get_sf_business_ids():
-    """Get the list of Salesforce business IDs from session state"""
-    return st.session_state.get("sf_business_ids", [])
+def get_sf_prospect_ids():
+    """Get the list of Salesforce prospect IDs from session state"""
+    return st.session_state.get("sf_prospect_ids", [])
 
 def get_load_search_counter():
     """Get the load search counter from session state"""
@@ -2942,46 +3561,475 @@ def get_sf_pushed_count():
     """Get the Salesforce pushed count from session state"""
     return st.session_state.get("sf_pushed_count", 0)
 
+
+def get_staged_prospects():
+    """Get the staged prospects from session state"""
+    return st.session_state.get("staged_prospects", [])
+
+
+def clean_staged_prospects():
+    """Clean up corrupted or invalid staged prospects - only remove truly corrupted entries"""
+    if "staged_prospects" not in st.session_state:
+        return 0
+    
+    original_count = len(st.session_state.staged_prospects)
+    valid_prospects = []
+    
+    for prospect in st.session_state.staged_prospects:
+        # Only check for basic data integrity, not submission status
+        # Staged prospects are meant to be queued for review, not necessarily submitted yet
+        prospect_id = prospect.get("prospect_id")
+        company = prospect.get("company")
+        
+        # Only remove if the prospect data is actually corrupted (missing required fields)
+        if prospect_id and company:  # Must have at least ID and company name
+            valid_prospects.append(prospect)
+        # If missing basic required data, this is truly corrupted - remove it
+    
+    st.session_state.staged_prospects = valid_prospects
+    cleaned_count = original_count - len(valid_prospects)
+    
+    return cleaned_count
+
+
+def add_prospect_to_staging(prospect_data, selected_contact=None):
+    """Add a prospect to the staging area for Salesforce submission"""
+    if "staged_prospects" not in st.session_state:
+        st.session_state.staged_prospects = []
+    
+    # Extract prospect ID
+    prospect_id = prospect_data.get("PROSPECT_ID") or prospect_data.get("IDENTIFIER")
+    
+    if prospect_id is None:
+        return False
+
+    # Check if already staged (avoid duplicates)
+    existing_ids = [str(p.get("prospect_id")) for p in st.session_state.staged_prospects if p.get("prospect_id") is not None]
+    prospect_id_str = str(prospect_id) if prospect_id is not None else None
+    
+    if prospect_id_str and prospect_id_str in existing_ids:
+        return False
+
+    # Use selected contact info if provided, otherwise default to main table contact info
+    if selected_contact:
+        # Use the selected contact from TOP10_CONTACTS
+        contact_name = selected_contact.get("name", "")
+        contact_email = selected_contact.get("email_address", "")
+        contact_phone = selected_contact.get("direct_phone_number", "")
+        contact_mobile = selected_contact.get("mobile_phone", "")
+        contact_title = selected_contact.get("job_title", "")
+    else:
+        # Use default contact info from the main table
+        contact_name = prospect_data.get("CONTACT_NAME", "")
+        contact_email = prospect_data.get("CONTACT_EMAIL", "")
+        contact_phone = prospect_data.get("CONTACT_PHONE", "")
+        contact_mobile = prospect_data.get("CONTACT_MOBILE", "")
+        contact_title = prospect_data.get("CONTACT_JOB_TITLE", "")
+    
+    # Parse contact name for first/last
+    name_parts = contact_name.split(' ') if contact_name else ['', '']
+    first_name = name_parts[0] if len(name_parts) > 0 else ""
+    last_name = name_parts[-1] if len(name_parts) > 1 else ""
+    
+    # Create staging record
+    staging_record = {
+        "prospect_id": prospect_id,
+        "company": prospect_data.get("DBA_NAME", ""),
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": contact_email,
+        "phone": prospect_data.get("PHONE", ""),
+        "city": prospect_data.get("CITY", ""),
+        "state": prospect_data.get("STATE", ""),
+        "zip": prospect_data.get("ZIP", ""),
+        "industry": prospect_data.get("PRIMARY_INDUSTRY", ""),
+        "revenue": prospect_data.get("REVENUE", ""),
+        "employees": prospect_data.get("NUMBER_OF_EMPLOYEES", ""),
+        "contact_name": contact_name,
+        "contact_mobile": contact_mobile,
+        "contact_phone": contact_phone,  # Contact's direct phone
+        "address": prospect_data.get("FULL_ADDRESS") or prospect_data.get("ADDRESS", ""),
+        "website": prospect_data.get("WEBSITE", ""),
+        "job_title": contact_title,
+        # Additional mapped fields for full record
+        "mcc_code": prospect_data.get("MCC_CODE", ""),
+        "identifier": prospect_data.get("IDENTIFIER", ""),
+        "taxid": prospect_data.get("TAXID", ""),
+        "number_of_locations": prospect_data.get("NUMBER_OF_LOCATIONS", ""),
+        "zi_c_company_id": prospect_data.get("ZI_C_COMPANY_ID", ""),
+        "zi_contact_id": prospect_data.get("ZI_CONTACT_ID", ""),
+        "data_agg_uid": prospect_data.get("DATA_AGG_UID", ""),
+        "zi_c_location_id": prospect_data.get("ZI_C_LOCATION_ID", ""),
+        # Store original address components separately for proper field mapping
+        "original_address": prospect_data.get("ADDRESS", ""),  # Street address only
+        "original_city": prospect_data.get("CITY", ""),
+        "original_state": prospect_data.get("STATE", ""),
+        "original_zip": prospect_data.get("ZIP", ""),
+        # Store TOP10_CONTACTS data for persistent contact selection across app reloads
+        "top10_contacts": prospect_data.get("TOP10_CONTACTS", ""),
+        "added_timestamp": datetime.now().isoformat()
+    }
+    
+    st.session_state.staged_prospects.append(staging_record)
+    st.write(f"✅ Added '{prospect_data.get('DBA_NAME', 'Unknown')}' to Salesforce Queue successfully")
+    return True
+
+
+def remove_prospect_from_staging(prospect_id):
+    """Remove a prospect from the staging area"""
+    if "staged_prospects" not in st.session_state:
+        return False
+    
+    original_count = len(st.session_state.staged_prospects)
+    prospect_id_str = str(prospect_id) if prospect_id is not None else None
+    
+    st.session_state.staged_prospects = [
+        p for p in st.session_state.staged_prospects 
+        if str(p.get("prospect_id")) != prospect_id_str
+    ]
+    
+    removed_count = original_count - len(st.session_state.staged_prospects)
+    
+    return removed_count > 0
+
+
+def clear_staging():
+    """Clear all staged prospects"""
+    st.session_state.staged_prospects = []
+
+
+def validate_staged_prospect_enhanced(prospect):
+    """Enhanced validation that includes contact selection check"""
+    # Basic validation
+    validation_result = validate_staged_prospect(prospect)
+    
+    # Check if this prospect needs contact selection using stored TOP10_CONTACTS
+    prospect_id = prospect.get('prospect_id')
+    needs_contact_selection = False
+    contact_selection_valid = True
+    
+    # Parse TOP10_CONTACTS from the staged prospect data
+    top_contacts = prospect.get("top10_contacts")
+    
+    # Parse TOP10_CONTACTS to check for multiple contacts
+    contacts_available = []
+    has_contacts = False
+    if hasattr(top_contacts, 'empty'):  # pandas Series
+        has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+        if has_contacts:
+            top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+    else:
+        has_contacts = bool(top_contacts)
+    if has_contacts:
+        if isinstance(top_contacts, str):
+            try:
+                import json
+                contacts_obj = json.loads(top_contacts)
+            except:
+                contacts_obj = {}
+        else:
+            contacts_obj = top_contacts
+        
+        if isinstance(contacts_obj, dict) and contacts_obj:
+            contacts_available = list(contacts_obj.values())
+        elif isinstance(contacts_obj, list) and contacts_obj:
+            contacts_available = contacts_obj
+    
+    # Add main table contact if it has meaningful data
+    main_table_contact = {
+        "name": prospect.get("contact_name", ""),
+        "email_address": prospect.get("email", ""),
+        "direct_phone_number": prospect.get("contact_phone", ""),
+        "mobile_phone": prospect.get("contact_mobile", ""),
+        "job_title": prospect.get("job_title", ""),
+        "source": "main_table"
+    }
+    
+    main_contact_has_data = any(
+        bool(main_table_contact.get(field, "").strip()) if main_table_contact.get(field) else False
+        for field in ["name", "email_address", "direct_phone_number", "mobile_phone", "job_title"]
+    )
+    
+    if main_contact_has_data:
+        contacts_available.insert(0, main_table_contact)
+    
+    # Check if contact selection is needed and valid
+    if len(contacts_available) > 1:
+        needs_contact_selection = True
+        current_selection_key = f"contact_selection_{prospect_id}"
+        current_selection = st.session_state.get(current_selection_key, 0)
+        
+        # Check if "Please select" option is still selected (index 0)
+        contact_selection_valid = current_selection != 0
+    else:
+        # If there's only one contact or no contacts, no selection is needed
+        needs_contact_selection = False
+        contact_selection_valid = True
+    
+    # Overall validation combines basic validation and contact selection
+    is_valid = validation_result['is_valid'] and contact_selection_valid
+    missing_fields = validation_result.get('missing_fields', []).copy()
+    if needs_contact_selection and not contact_selection_valid:
+        missing_fields.append("Contact Selection")
+    
+    return {
+        "is_valid": is_valid,
+        "missing_fields": missing_fields,
+        "errors": missing_fields,
+        "needs_contact_selection": needs_contact_selection,
+        "contact_selection_valid": contact_selection_valid
+    }
+
+
+def validate_staged_prospect(prospect):
+    """Validate a staged prospect for required fields"""
+    required_fields = {
+        "company": "Company Name",
+        "first_name": "First Name", 
+        "last_name": "Last Name"
+    }
+    
+    missing_fields = []
+    for field, label in required_fields.items():
+        if not prospect.get(field) or prospect.get(field).strip() == "":
+            missing_fields.append(label)
+    
+    return {
+        "is_valid": len(missing_fields) == 0,
+        "missing_fields": missing_fields,
+        "errors": missing_fields  # Add errors alias for consistency
+    }
+
+
+def submit_staged_prospects_to_sf():
+    """Submit all staged prospects to the sf_leads table"""
+    if "staged_prospects" not in st.session_state or not st.session_state.staged_prospects:
+        return {
+            "success": False,
+            "message": "No prospects in staging area",
+            "results": []
+        }
+    
+    results = []
+    success_count = 0
+    error_count = 0
+    duplicate_count = 0
+    
+    session = get_active_session()
+    
+    for prospect in st.session_state.staged_prospects:
+        # Validate before submission
+        validation = validate_staged_prospect(prospect)
+        if not validation["is_valid"]:
+            results.append({
+                "prospect": prospect.get("company", "Unknown"),
+                "status": "error",
+                "message": f"Missing required fields: {', '.join(validation['missing_fields'])}"
+            })
+            error_count += 1
+            continue
+        
+        # Check if there's a selected contact for this prospect
+        prospect_id = prospect["prospect_id"]
+        selected_contact_key = f"selected_contact_for_{prospect_id}"
+        selected_contact = st.session_state.get(selected_contact_key)
+        
+        # Create a modified prospect data that includes the selected contact info
+        if selected_contact and selected_contact.get("source") != "main_table":
+            # Use the selected contact from TOP10_CONTACTS
+            modified_prospect = prospect.copy()
+            
+            # Update contact fields with selected contact data
+            if selected_contact.get("name"):
+                modified_prospect["contact_name"] = selected_contact["name"]
+                # Update first_name and last_name as well
+                name_parts = selected_contact["name"].split(' ') if selected_contact["name"] else ['', '']
+                modified_prospect["first_name"] = name_parts[0] if len(name_parts) > 0 else ""
+                modified_prospect["last_name"] = name_parts[-1] if len(name_parts) > 1 else ""
+            
+            if selected_contact.get("email_address"):
+                modified_prospect["email"] = selected_contact["email_address"]
+            
+            if selected_contact.get("direct_phone_number"):
+                modified_prospect["contact_phone"] = selected_contact["direct_phone_number"]
+            
+            if selected_contact.get("mobile_phone"):
+                modified_prospect["contact_mobile"] = selected_contact["mobile_phone"]
+            
+            if selected_contact.get("job_title"):
+                modified_prospect["job_title"] = selected_contact["job_title"]
+            
+            # Create a prospect data dict compatible with insert_prospect_to_sf_table
+            # This must match the exact structure that insert_prospect_to_sf_table expects
+            prospect_data_for_insert = {
+                "PROSPECT_ID": modified_prospect["prospect_id"],
+                "ADDRESS": modified_prospect.get("original_address", ""),
+                "REVENUE": modified_prospect.get("revenue", ""),
+                "CITY": modified_prospect.get("original_city", ""),
+                "STATE": modified_prospect.get("original_state", ""),
+                "ZIP": modified_prospect.get("original_zip", ""),
+                "DBA_NAME": modified_prospect.get("company", ""),
+                "PRIMARY_INDUSTRY": modified_prospect.get("industry", ""),
+                "CONTACT_EMAIL": modified_prospect.get("email", ""),
+                "TAXID": modified_prospect.get("taxid", ""),
+                "CONTACT_NAME": modified_prospect.get("contact_name", ""),
+                "MCC_CODE": modified_prospect.get("mcc_code", ""),
+                "IDENTIFIER": modified_prospect.get("identifier", ""),
+                "NUMBER_OF_LOCATIONS": modified_prospect.get("number_of_locations", ""),
+                "NUMBER_OF_EMPLOYEES": modified_prospect.get("employees", ""),
+                "PHONE": modified_prospect.get("phone", ""),
+                "CONTACT_MOBILE": modified_prospect.get("contact_mobile", ""),
+                "ZI_C_COMPANY_ID": modified_prospect.get("zi_c_company_id", ""),
+                "ZI_CONTACT_ID": modified_prospect.get("zi_contact_id", ""),
+                "WEBSITE": modified_prospect.get("website", ""),
+                "DATA_AGG_UID": modified_prospect.get("data_agg_uid", ""),
+                "CONTACT_JOB_TITLE": modified_prospect.get("job_title", ""),
+                "ZI_C_LOCATION_ID": modified_prospect.get("zi_c_location_id", ""),
+                "CONTACT_PHONE": modified_prospect.get("contact_phone", "")
+            }
+        else:
+            # Use the original prospect data (either main table contact or no contact selection)
+            prospect_data_for_insert = {
+                "PROSPECT_ID": prospect["prospect_id"],
+                "ADDRESS": prospect.get("original_address", ""),  # Use stored original ADDRESS
+                "REVENUE": prospect.get("revenue", ""),
+                "CITY": prospect.get("original_city", ""),  # Use stored original CITY
+                "STATE": prospect.get("original_state", ""),  # Use stored original STATE
+                "ZIP": prospect.get("original_zip", ""),  # Use stored original ZIP
+                "DBA_NAME": prospect.get("company", ""),
+                "PRIMARY_INDUSTRY": prospect.get("industry", ""),
+                "CONTACT_EMAIL": prospect.get("email", ""),
+                "TAXID": prospect.get("taxid", ""),
+                "CONTACT_NAME": prospect.get("contact_name", ""),
+                "MCC_CODE": prospect.get("mcc_code", ""),
+                "IDENTIFIER": prospect.get("identifier", ""),
+                "NUMBER_OF_LOCATIONS": prospect.get("number_of_locations", ""),
+                "NUMBER_OF_EMPLOYEES": prospect.get("employees", ""),
+                "PHONE": prospect.get("phone", ""),
+                "CONTACT_MOBILE": prospect.get("contact_mobile", ""),
+                "ZI_C_COMPANY_ID": prospect.get("zi_c_company_id", ""),
+                "ZI_CONTACT_ID": prospect.get("zi_contact_id", ""),
+                "WEBSITE": prospect.get("website", ""),
+                "DATA_AGG_UID": prospect.get("data_agg_uid", ""),
+                "CONTACT_JOB_TITLE": prospect.get("job_title", ""),
+                "ZI_C_LOCATION_ID": prospect.get("zi_c_location_id", ""),
+                "CONTACT_PHONE": prospect.get("contact_phone", "")
+            }
+        
+        # Submit to sf_leads table - let the function fetch data from DB and only override contact fields
+        try:
+            # Check if we need to override contact fields
+            contact_override = None
+            if selected_contact and selected_contact.get("source") != "main_table":
+                # Use the selected contact from TOP10_CONTACTS
+                contact_override = {}
+                if selected_contact.get("name"):
+                    contact_override["CONTACT_NAME"] = selected_contact["name"]
+                if selected_contact.get("email_address"):
+                    contact_override["CONTACT_EMAIL"] = selected_contact["email_address"]
+                if selected_contact.get("direct_phone_number"):
+                    contact_override["CONTACT_PHONE"] = selected_contact["direct_phone_number"]
+                if selected_contact.get("mobile_phone"):
+                    contact_override["CONTACT_MOBILE"] = selected_contact["mobile_phone"]
+                if selected_contact.get("job_title"):
+                    contact_override["CONTACT_JOB_TITLE"] = selected_contact["job_title"]
+            
+            # Call the function - it will fetch all data from DB and override only contact fields if provided
+            result = insert_prospect_to_sf_table(prospect["prospect_id"], session, contact_override)
+                
+        except Exception as insert_error:
+            error_count += 1
+            results.append({
+                "prospect": prospect.get("company", "Unknown"),
+                "status": "error",
+                "message": f"Insertion error: {str(insert_error)}"
+            })
+            continue
+        
+        if result["success"]:
+            success_count += 1
+            results.append({
+                "prospect": prospect.get("company", "Unknown"),
+                "status": "success",
+                "message": result["message"]
+            })
+            # Add to session tracking
+            prospect_id_str = str(prospect["prospect_id"])
+            if prospect_id_str not in st.session_state.get("sf_prospect_ids", []):
+                if "sf_prospect_ids" not in st.session_state:
+                    st.session_state.sf_prospect_ids = []
+                st.session_state.sf_prospect_ids.append(prospect_id_str)
+                st.session_state.sf_pushed_count = len(st.session_state.sf_prospect_ids)
+                st.session_state.sf_last_update = datetime.now().isoformat()
+        
+        elif result["is_duplicate"]:
+            duplicate_count += 1
+            results.append({
+                "prospect": prospect.get("company", "Unknown"),
+                "status": "duplicate",
+                "message": result["message"]
+            })
+        else:
+            error_count += 1
+            results.append({
+                "prospect": prospect.get("company", "Unknown"),
+                "status": "error", 
+                "message": result["message"]
+            })
+    
+    # Clear staging after submission attempt
+    clear_staging()
+    
+    return {
+        "success": success_count > 0,
+        "success_count": success_count,
+        "error_count": error_count,
+        "duplicate_count": duplicate_count,
+        "results": results,
+        "total_processed": len(results),
+        "message": f"Processed {len(results)} prospects: {success_count} successful, {error_count} errors, {duplicate_count} duplicates" if len(results) > 0 else "No prospects to process"
+    }
+
+
+
 def is_dark_map_style(map_style=None):
     """Determine if the current or provided map style is dark (needs light tooltip)"""
     style = map_style if map_style is not None else get_current_map_style()
     return style in [":material/dark_mode:", ":material/satellite_alt:"]
 
-def build_tooltip_sections(business_data):
+def build_tooltip_sections(prospect_data):
     sections = []
 
     # Add DNC warning if INTERNAL_DNC is True
-    dnc_val = business_data.get("INTERNAL_DNC")
+    dnc_val = prospect_data.get("INTERNAL_DNC")
     if dnc_val is True or dnc_val == 1 or (isinstance(dnc_val, str) and dnc_val.strip().lower() in ["true", "1"]):
-        dnc_warning = "<span style='color:red; font-weight:bold; font-size:1.1em;'>🚫 INTERNAL DNC</span>"
+        dnc_warning = "<span style='color:red; font-weight:bold; font-size:1.1em;'>🚫 INTERNAL Do Not Contact</span>"
         sections.append(("", [dnc_warning]))
-
-    # ...existing code...
 
     location_items = []
     parent_name_col = "PARENT_NAME"
-    business_name_col = "DBA_NAME"
-    parent_name = str(business_data.get(parent_name_col, '') or '').strip().lower()
-    business_name = str(business_data.get(business_name_col, '') or '').strip().lower()
-    if parent_name_col and is_valid_value(business_data.get(parent_name_col)) and parent_name and parent_name != business_name:
+    prospect_name_col = "DBA_NAME"
+    parent_name = str(prospect_data.get(parent_name_col, '') or '').strip().lower()
+    prospect_name = str(prospect_data.get(prospect_name_col, '') or '').strip().lower()
+    if parent_name_col and is_valid_value(prospect_data.get(parent_name_col)) and parent_name and parent_name != prospect_name:
         location_items.append(
-            f'<span style="font-weight:bold; font-size:1.25em;">🏢 {business_data[parent_name_col]}</span>'
+            f'<span style="font-weight:bold; font-size:1.25em;">🏢 {prospect_data[parent_name_col]}</span>'
         )
 
-    address_parts = extract_address_parts(business_data)
+    address_parts = extract_address_parts(prospect_data)
     if address_parts:
         address_str = ', '.join(address_parts)
         location_items.append(f'📍 {address_str}')
 
     phone_col = "PHONE"
-    if phone_col and is_valid_value(business_data.get(phone_col)):
-        formatted_phone = format_phone_for_display(business_data[phone_col])
+    if phone_col and is_valid_value(prospect_data.get(phone_col)):
+        formatted_phone = format_phone_for_display(prospect_data[phone_col])
         if formatted_phone:
             location_items.append(f'📞 {formatted_phone}')
 
     url_col = "WEBSITE"
-    if url_col and is_valid_value(business_data.get(url_col)):
-        formatted_url = format_url(business_data[url_col])
+    if url_col and is_valid_value(prospect_data.get(url_col)):
+        formatted_url = format_url(prospect_data[url_col])
         if formatted_url:
             location_items.append(f'🌐 {formatted_url}')
 
@@ -2991,74 +4039,74 @@ def build_tooltip_sections(business_data):
     # Contact Information Section
     contact_items = []
     # Add NATIONAL DNC warning for contact if present, above CONTACT_NAME
-    contact_natl_dnc = business_data.get("CONTACT_NATIONAL_DNC")
+    contact_natl_dnc = prospect_data.get("CONTACT_NATIONAL_DNC")
     if contact_natl_dnc is True or contact_natl_dnc == 1 or (isinstance(contact_natl_dnc, str) and contact_natl_dnc.strip().lower() in ["true", "1"]):
-        contact_items.append("<span style='color:red; font-size:.75em;'>🚫 NATIONAL DNC</span>")
+        contact_items.append("<span style='color:red; font-size:.75em;'>🚫 NATIONAL Do Not Call</span>")
 
     contact_name_col = "CONTACT_NAME"
-    if contact_name_col and is_valid_value(business_data.get(contact_name_col)):
-        contact_items.append(f'👤 {business_data[contact_name_col]}')
+    if contact_name_col and is_valid_value(prospect_data.get(contact_name_col)):
+        contact_items.append(f'👤 {prospect_data[contact_name_col]}')
 
     contact_phone_col = "CONTACT_PHONE"
-    if contact_phone_col and is_valid_value(business_data.get(contact_phone_col)):
-        formatted_phone = format_phone_for_display(business_data[contact_phone_col])
+    if contact_phone_col and is_valid_value(prospect_data.get(contact_phone_col)):
+        formatted_phone = format_phone_for_display(prospect_data[contact_phone_col])
         if formatted_phone:
             contact_items.append(f'📞 {formatted_phone}')
 
     contact_mobile_col = "CONTACT_MOBILE"
-    if contact_mobile_col and is_valid_value(business_data.get(contact_mobile_col)):
-        formatted_mobile = format_phone_for_display(business_data[contact_mobile_col])
+    if contact_mobile_col and is_valid_value(prospect_data.get(contact_mobile_col)):
+        formatted_mobile = format_phone_for_display(prospect_data[contact_mobile_col])
         if formatted_mobile:
             contact_items.append(f'📱 {formatted_mobile}')
 
     contact_job_title_col = "CONTACT_JOB_TITLE"
-    if contact_job_title_col and is_valid_value(business_data.get(contact_job_title_col)):
-        contact_items.append(f'💼 {business_data[contact_job_title_col]}')
+    if contact_job_title_col and is_valid_value(prospect_data.get(contact_job_title_col)):
+        contact_items.append(f'💼 {prospect_data[contact_job_title_col]}')
 
     contact_email_col = "CONTACT_EMAIL"
-    if contact_email_col and is_valid_value(business_data.get(contact_email_col)):
-        contact_items.append(f'📧 {business_data[contact_email_col]}')
+    if contact_email_col and is_valid_value(prospect_data.get(contact_email_col)):
+        contact_items.append(f'📧 {prospect_data[contact_email_col]}')
 
     if contact_items:
         sections.append(('Contact Information', contact_items))
 
-    # Business Metrics Section
+    # prospect Metrics Section
     metrics_items = []
     revenue_col = "REVENUE"
-    if revenue_col and is_valid_value(business_data.get(revenue_col)):
+    if revenue_col and is_valid_value(prospect_data.get(revenue_col)):
         try:
-            revenue_value = float(business_data[revenue_col])
+            revenue_value = float(prospect_data[revenue_col])
             metrics_items.append(f'💵 Revenue: ${revenue_value:,.0f}')
         except (ValueError, TypeError):
             pass
 
     employees_col = "NUMBER_OF_EMPLOYEES"
-    if employees_col and is_valid_value(business_data.get(employees_col)):
-        metrics_items.append(f'👥 Employees: {business_data[employees_col]}')
+    if employees_col and is_valid_value(prospect_data.get(employees_col)):
+        metrics_items.append(f'👥 Employees: {prospect_data[employees_col]}')
 
     locations_col = "NUMBER_OF_LOCATIONS"
-    if locations_col and is_valid_value(business_data.get(locations_col)):
+    if locations_col and is_valid_value(prospect_data.get(locations_col)):
             try:
-                loc_val = int(float(business_data[locations_col]))
+                loc_val = int(float(prospect_data[locations_col]))
                 metrics_items.append(f'🏢 Locations: {loc_val:,}')
             except (ValueError, TypeError):
-                metrics_items.append(f'🏢 Locations: {business_data[locations_col]}')
+                metrics_items.append(f'🏢 Locations: {prospect_data[locations_col]}')
 
     industry_col = "PRIMARY_INDUSTRY"
-    if industry_col and is_valid_value(business_data.get(industry_col)):
-        metrics_items.append(f'🏭 Industry: {business_data[industry_col]}')
+    if industry_col and is_valid_value(prospect_data.get(industry_col)):
+        metrics_items.append(f'🏭 Industry: {prospect_data[industry_col]}')
 
     mcc_col = "MCC_CODE"
-    if mcc_col and is_valid_value(business_data.get(mcc_col)):
-        metrics_items.append(f'📊 MCC Code: {business_data[mcc_col]}')
+    if mcc_col and is_valid_value(prospect_data.get(mcc_col)):
+        metrics_items.append(f'📊 MCC Code: {prospect_data[mcc_col]}')
 
     if metrics_items:
-        sections.append(('Business Metrics', metrics_items))
+        sections.append(('prospect Metrics', metrics_items))
 
     return sections
 
-def build_business_card_sections(business_data):
-    """Build standardized business data sections for HTML business cards"""
+def build_prospect_card_sections(prospect_data):
+    """Build standardized prospect data sections for HTML prospect cards"""
     # Helper function to create metric HTML
     def create_metric(icon, label, value, link=None):
         metric_value = f'<a href="{link}" target="_blank">{value}</a>' if link else value
@@ -3073,68 +4121,68 @@ def build_business_card_sections(business_data):
     parent_name_col = "PARENT_NAME"
     parent_phone_col = "PARENT_PHONE"
     parent_website_col = "PARENT_WEBSITE"
-    business_name_col = "DBA_NAME"
-    business_phone_col = "PHONE"
-    business_website_col = "WEBSITE"
+    prospect_name_col = "DBA_NAME"
+    prospect_phone_col = "PHONE"
+    prospect_website_col = "WEBSITE"
 
-    parent_name = str(business_data.get(parent_name_col, '') or '').strip().lower()
-    business_name = str(business_data.get(business_name_col, '') or '').strip().lower()
-    parent_phone = str(business_data.get(parent_phone_col, '') or '').strip().lower()
-    business_phone = str(business_data.get(business_phone_col, '') or '').strip().lower()
-    parent_website = str(business_data.get(parent_website_col, '') or '').strip().lower()
-    business_website = str(business_data.get(business_website_col, '') or '').strip().lower()
+    parent_name = str(prospect_data.get(parent_name_col, '') or '').strip().lower()
+    prospect_name = str(prospect_data.get(prospect_name_col, '') or '').strip().lower()
+    parent_phone = str(prospect_data.get(parent_phone_col, '') or '').strip().lower()
+    prospect_phone = str(prospect_data.get(prospect_phone_col, '') or '').strip().lower()
+    parent_website = str(prospect_data.get(parent_website_col, '') or '').strip().lower()
+    prospect_website = str(prospect_data.get(prospect_website_col, '') or '').strip().lower()
 
     parent_info_present = any([
-        is_valid_value(business_data.get(parent_name_col)),
-        is_valid_value(business_data.get(parent_phone_col)),
-        is_valid_value(business_data.get(parent_website_col))
+        is_valid_value(prospect_data.get(parent_name_col)),
+        is_valid_value(prospect_data.get(parent_phone_col)),
+        is_valid_value(prospect_data.get(parent_website_col))
     ])
     parent_info_differs = (
-        (parent_name and parent_name != business_name) or
-        (parent_phone and parent_phone != business_phone) or
-        (parent_website and parent_website != business_website)
+        (parent_name and parent_name != prospect_name) or
+        (parent_phone and parent_phone != prospect_phone) or
+        (parent_website and parent_website != prospect_website)
     )
 
     if parent_info_present and parent_info_differs:
         if parent_name:
-            parent_metrics.append(create_metric('🏢', 'Parent Company', business_data[parent_name_col]))
+            parent_metrics.append(create_metric('🏢', 'Parent Company', prospect_data[parent_name_col]))
         if parent_phone:
-            formatted_parent_phone = format_phone_for_display(business_data[parent_phone_col])
-            parent_phone_link = format_phone_for_link(business_data[parent_phone_col])
+            formatted_parent_phone = format_phone_for_display(prospect_data[parent_phone_col])
+            parent_phone_link = format_phone_for_link(prospect_data[parent_phone_col])
             if formatted_parent_phone:
                 parent_metrics.append(create_metric('📞', 'Parent Phone', formatted_parent_phone, parent_phone_link))
         if parent_website:
-            formatted_parent_website = format_url(business_data[parent_website_col])
+            formatted_parent_website = format_url(prospect_data[parent_website_col])
             if formatted_parent_website:
                 parent_metrics.append(create_metric('🌐', 'Parent Website', formatted_parent_website, formatted_parent_website))
 
     location_metrics = []
-    address_parts = extract_address_parts(business_data)
+    address_parts = extract_address_parts(prospect_data)
     if address_parts:
         address_str = ', '.join(address_parts)
         address_link = format_address_for_link(address_parts)
         location_metrics.append(create_metric('📍', 'Address', address_str, address_link))
 
     phone_col = "PHONE"
-    if phone_col and is_valid_value(business_data.get(phone_col)):
-        formatted_phone = format_phone_for_display(business_data[phone_col])
-        phone_link = format_phone_for_link(business_data[phone_col])
+    if phone_col and is_valid_value(prospect_data.get(phone_col)):
+        formatted_phone = format_phone_for_display(prospect_data[phone_col])
+        phone_link = format_phone_for_link(prospect_data[phone_col])
         if formatted_phone:
             location_metrics.append(create_metric('📞', 'Phone', formatted_phone, phone_link))
 
     url_col = "WEBSITE"
-    if url_col and is_valid_value(business_data.get(url_col)):
-        formatted_url = format_url(business_data[url_col])
+    if url_col and is_valid_value(prospect_data.get(url_col)):
+        formatted_url = format_url(prospect_data[url_col])
         if formatted_url:
             location_metrics.append(create_metric('🌐', 'Website', formatted_url, formatted_url))
 
-    # Business metrics
-    business_metrics = []
+    # prospect metrics
+    prospect_metrics = []
     revenue_col = "REVENUE"
-    if revenue_col and is_valid_value(business_data.get(revenue_col)):
+    if revenue_col and is_valid_value(prospect_data.get(revenue_col)):
         try:
-            revenue_value = float(business_data[revenue_col])
-            business_metrics.append(create_metric('💵', 'Annual Revenue', f'${revenue_value:,.0f}'))
+            revenue_value = float(prospect_data[revenue_col])
+            prospect_metrics.append(create_metric('💵', 'Annual Revenue', f'${revenue_value:,.0f}'))
         except (ValueError, TypeError):
             pass
 
@@ -3146,15 +4194,15 @@ def build_business_card_sections(business_data):
         # If you need to map logical to actual, do it here, else use logical_field directly
         logical_to_actual = {"MCC_CODE": "MCC_CODE", "B2B": "IS_B2B", "B2C": "IS_B2C"}
         actual_col = logical_to_actual.get(logical_field, logical_field)
-        if actual_col and is_valid_value(business_data.get(actual_col)):
+        if actual_col and is_valid_value(prospect_data.get(actual_col)):
                 if actual_col == "NUMBER_OF_LOCATIONS":
                     try:
-                        loc_val = int(float(business_data[actual_col]))
-                        business_metrics.append(create_metric(icon, label, f"{loc_val:,}"))
+                        loc_val = int(float(prospect_data[actual_col]))
+                        prospect_metrics.append(create_metric(icon, label, f"{loc_val:,}"))
                     except (ValueError, TypeError):
-                        business_metrics.append(create_metric(icon, label, business_data[actual_col]))
+                        prospect_metrics.append(create_metric(icon, label, prospect_data[actual_col]))
                 else:
-                    business_metrics.append(create_metric(icon, label, business_data[actual_col]))
+                    prospect_metrics.append(create_metric(icon, label, prospect_data[actual_col]))
 
     # Return HTML sections
     sections = []
@@ -3162,15 +4210,24 @@ def build_business_card_sections(business_data):
         sections.append(create_section("Parent Company", parent_metrics))
     sections.extend([
         create_section("Location Details", location_metrics),
-        create_section("Business Metrics", business_metrics)
+        create_section("Prospect Metrics", prospect_metrics)
     ])
 
-    # Add Contact Hierarchy section only if there are contacts in TOP10_CONTACTS
+    # Add Contact Hierarchy section if there are contacts in TOP10_CONTACTS, or fall back to main table contact info
     import json
-    top_contacts = business_data.get("TOP10_CONTACTS")
+    top_contacts = prospect_data.get("TOP10_CONTACTS")
     has_contacts = False
     contacts_iter = []
-    if top_contacts:
+    
+    # Handle pandas Series for top_contacts
+    if hasattr(top_contacts, 'empty'):  # pandas Series
+        has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+        if has_contacts:
+            top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+    else:
+        has_contacts = bool(top_contacts)
+    
+    if has_contacts:
         contacts_obj = top_contacts
         if isinstance(top_contacts, str):
             try:
@@ -3183,7 +4240,14 @@ def build_business_card_sections(business_data):
         elif isinstance(contacts_obj, list) and len(contacts_obj) > 0:
             contacts_iter = contacts_obj
             has_contacts = True
-    if has_contacts:
+    
+    # If no TOP10_CONTACTS, check for fallback contact info from main table
+    has_fallback_contact = False
+    if not has_contacts:
+        contact_fields = ["CONTACT_NAME", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE", "CONTACT_EMAIL"]
+        has_fallback_contact = any(is_valid_value(prospect_data.get(field)) for field in contact_fields)
+    
+    if has_contacts or has_fallback_contact:
         def create_contact_header():
             labels = ["Name", "Job Title", "Direct Phone", "Mobile Phone", "Email", ""]
             boxes = [
@@ -3226,7 +4290,7 @@ def build_business_card_sections(business_data):
             is_dnc = contact.get('is_dnc')
             show_dnc = is_dnc is True or is_dnc == 1 or (isinstance(is_dnc, str) and is_dnc.strip().lower() in ['true', '1'])
             if show_dnc:
-                dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; justify-content:center; color:red; font-weight:bold; font-size:1em;">🚫 NATIONAL DNC</div>'
+                dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; justify-content:center; color:red; font-weight:bold; font-size:1em;">🚫 NATIONAL Do Not Call</div>'
             else:
                 dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center;">&nbsp;</div>'
             values = [name, job_title, direct_phone_html, mobile_phone_html, email_html]
@@ -3236,26 +4300,83 @@ def build_business_card_sections(business_data):
             ]
             row_html = f'<div style="display:flex; flex-direction:row; gap:0; width:100%; border-bottom:1px solid #e6e9f3; background:#fff;">' + ''.join(boxes) + dnc_col + '</div>'
             return row_html
+        
+        def create_fallback_contact_row():
+            # Create a contact row using main table contact fields
+            name = prospect_data.get('CONTACT_NAME', '') or ''
+            job_title = prospect_data.get('CONTACT_JOB_TITLE', '') or ''
+            direct_phone = prospect_data.get('CONTACT_PHONE', '') or ''
+            mobile_phone = prospect_data.get('CONTACT_MOBILE', '') or ''
+            email = prospect_data.get('CONTACT_EMAIL', '') or ''
+            
+            # Format phone numbers as clickable links
+            formatted_direct_phone = format_phone_for_display(direct_phone)
+            direct_phone_link = format_phone_for_link(direct_phone)
+
+            link_style = "color:#262AFF; text-decoration:none;"
+            if formatted_direct_phone and direct_phone_link:
+                direct_phone_html = f'<a href="{direct_phone_link}" style="{link_style}">{formatted_direct_phone}</a>'
+            else:
+                direct_phone_html = direct_phone if direct_phone else "&nbsp;"
+
+            formatted_mobile_phone = format_phone_for_display(mobile_phone)
+            mobile_phone_link = format_phone_for_link(mobile_phone)
+            if formatted_mobile_phone and mobile_phone_link:
+                mobile_phone_html = f'<a href="{mobile_phone_link}" style="{link_style}">{formatted_mobile_phone}</a>'
+            else:
+                mobile_phone_html = mobile_phone if mobile_phone else "&nbsp;"
+
+            # Format email as clickable mailto link
+            email_link = format_email_for_link(email)
+            if email_link:
+                email_html = f'<a href="{email_link}" style="{link_style}">{email}</a>'
+            else:
+                email_html = email if email else "&nbsp;"
+
+            # Check for NATIONAL DNC flag from main table
+            contact_natl_dnc = prospect_data.get("CONTACT_NATIONAL_DNC")
+            show_dnc = contact_natl_dnc is True or contact_natl_dnc == 1 or (isinstance(contact_natl_dnc, str) and contact_natl_dnc.strip().lower() in ['true', '1'])
+            if show_dnc:
+                dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; justify-content:center; color:red; font-weight:bold; font-size:1em;">🚫 NATIONAL Do Not Call</div>'
+            else:
+                dnc_col = '<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center;">&nbsp;</div>'
+            
+            values = [name, job_title, direct_phone_html, mobile_phone_html, email_html]
+            boxes = [
+                f'<div style="flex:1 1 0; min-width:0; padding:4px 8px; display:flex; align-items:center; font-family: DM Sans, -apple-system, BlinkMacSystemFont, sans-serif; font-size:15px; color:#222; font-weight:500;">{value if value else "&nbsp;"}</div>'
+                for value in values
+            ]
+            row_html = f'<div style="display:flex; flex-direction:row; gap:0; width:100%; border-bottom:1px solid #e6e9f3; background:#fff;">' + ''.join(boxes) + dnc_col + '</div>'
+            return row_html
 
         contact_rows = [create_contact_header()]
-        for contact in contacts_iter:
-            contact_rows.append(create_contact_row(contact))
-        contact_hierarchy_html = f'<div class="data-viz-section"><div class="section-header">Contact Hierarchy</div><div style="display:flex; flex-direction:column; gap:8px;">{"".join(contact_rows)}</div></div>'
+        
+        if has_contacts:
+            # Use TOP10_CONTACTS data
+            for contact in contacts_iter:
+                contact_rows.append(create_contact_row(contact))
+            contact_section_title = "Contact Hierarchy"
+        else:
+            # Use fallback contact info from main table
+            contact_rows.append(create_fallback_contact_row())
+            contact_section_title = "Contact Information"
+        
+        contact_hierarchy_html = f'<div class="data-viz-section"><div class="section-header">{contact_section_title}</div><div style="display:flex; flex-direction:column; gap:8px;">{"".join(contact_rows)}</div></div>'
         sections.append(contact_hierarchy_html)
 
     return sections
 
 def create_data_editor_column_config():
     """Create standardized column configuration for st.data_editor"""
-    return {
+    config = {
         # Checkbox columns
         "Map": st.column_config.CheckboxColumn("Map", help="Check to include on map", default=True, width="small"),
-        "SF": st.column_config.CheckboxColumn("SF", help="Check to push to Salesforce", default=False, width="small"),
+        "SF": st.column_config.CheckboxColumn("SF", help="Check to write to salesforce", default=False, width="small"),
         
         # Text columns  
         "Current Customer": st.column_config.TextColumn("Current Customer", help="🔵 = Existing Customer, ⚪ = Prospect"),
         "FULL_ADDRESS": st.column_config.TextColumn("Full Address", help="Complete address"),
-        "IDENTIFIER": st.column_config.TextColumn("Identifier", help="Identifier"),
+        "IDENTIFIER": st.column_config.TextColumn("Identifier", help="Identifier", width="medium"),
         "CONTACT_NAME": st.column_config.TextColumn("Contact Name", help="Contact Name"),
         "PRIMARY_INDUSTRY": st.column_config.TextColumn("Primary Industry", help="Primary Industry"),
         "SUB_INDUSTRY": st.column_config.TextColumn("Sub Industry", help="Identifier"),
@@ -3277,17 +4398,47 @@ def create_data_editor_column_config():
         # Number columns
         "REVENUE": st.column_config.TextColumn("Revenue", help="Annual revenue in USD"),
         "NUMBER_OF_EMPLOYEES": st.column_config.NumberColumn("Employees", help="Number of employees", format="%.0f"),
-        "NUMBER_OF_LOCATIONS": st.column_config.NumberColumn("Locations", help="Number of locations", format="%.0f")
+        "NUMBER_OF_LOCATIONS": st.column_config.NumberColumn("Locations", help="Number of locations", format="%.0f"),
+        
+        # Array columns - formatted as text with line breaks
+        "ACTIVE_PRODUCTS": st.column_config.TextColumn("Active Products", help="Products offered by this business", width="large", max_chars=None),
+        "PRODUCT_FAMILY": st.column_config.TextColumn("Product Family", help="Product categories", width="medium")
     }
+    
+    # Hide columns by setting them to None
+    hidden_columns = get_hidden_columns()
+    for col in hidden_columns:
+        config[col] = None
+    
+    return config
 
 def get_disabled_columns():
     """Get list of columns that should be disabled in data editor"""
     return [
-        "DBA_NAME", "FULL_ADDRESS", "PHONE", "WEBSITE", "IDENTIFIER", "Current Customer", 
+        "PROSPECT_ID", "DBA_NAME", "FULL_ADDRESS", "PHONE", "WEBSITE", "IDENTIFIER", "Current Customer", 
         "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "PRIMARY_INDUSTRY", 
         "SUB_INDUSTRY", "MCC_CODE", "REVENUE", "NUMBER_OF_EMPLOYEES", 
         "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C", 
         "TOP10_CONTACTS", "CONTACT_NATIONAL_DNC", "INTERNAL_DNC"
+    ]
+
+def get_hidden_columns():
+
+    # Add columns to hide in data editor/tab1
+    return [
+        "HAS_CONTACT_INFO" ,
+        "PROSPECT_ID",
+        "DATA_AGG_UID",
+        "HAS_CONTACT_INFO",
+        "TOP10_CONTACTS",
+        "HAS_PHONE_CONTACT",
+        "HAS_EMAIL_CONTACT",
+        "HAS_ADDRESS_INFO",
+        "ADDRESS",
+        "CITY",
+        "STATE",
+        "ZIP"
+
     ]
 
 # def get_dataframe_format_config():
@@ -3675,8 +4826,11 @@ def has_active_filters(filters):
     
     return any(
         (STATIC_FILTERS[k]["type"] == "dropdown" and v != []) or
+        (STATIC_FILTERS[k]["type"] == "multiselect" and v != []) or
         (STATIC_FILTERS[k]["type"] == "range" and v != [None, None]) or
-        (STATIC_FILTERS[k]["type"] == "checkbox" and v) or
+        (STATIC_FILTERS[k]["type"] == "checkbox" and (
+            any(checked for checked in v.values()) if isinstance(v, dict) else bool(v)
+        )) or
         (STATIC_FILTERS[k]["type"] == "selectbox" and v != STATIC_FILTERS[k].get("options", [""])[0]) or
         (STATIC_FILTERS[k]["type"] == "text" and v.strip()) or
         (STATIC_FILTERS[k]["type"] == "number" and v != STATIC_FILTERS[k].get("default"))
@@ -3692,10 +4846,16 @@ def is_filter_active(filter_key, filter_value):
     filter_type = STATIC_FILTERS[filter_key]["type"]
     if filter_type == "dropdown":
         return bool(filter_value)
+    elif filter_type == "multiselect":
+        return bool(filter_value)
     elif filter_type == "range":
         return filter_value != [None, None]
     elif filter_type == "checkbox":
-        return bool(filter_value)
+        # Handle both dictionary format (new) and boolean format (legacy)
+        if isinstance(filter_value, dict):
+            return any(checked for checked in filter_value.values())
+        else:
+            return bool(filter_value)
     elif filter_type == "selectbox":
         return filter_value != STATIC_FILTERS[filter_key].get("options", [""])[0]
     elif filter_type == "text":
@@ -3732,7 +4892,7 @@ def create_map_style_button(icon, key, help_text, current_style, column):
 
 def adjust_radius_scale(scale_factor, min_value=0.0001, max_value=10.0):
     """Adjust radius scale for selected or initial radius"""
-    if st.session_state["selected_business_indices"]:
+    if st.session_state["selected_prospect_indices"]:
         current_scale = st.session_state["selected_radius_scale"]
         new_scale = max(min_value, min(max_value, current_scale * scale_factor))
         st.session_state["selected_radius_scale"] = new_scale
@@ -3743,7 +4903,7 @@ def adjust_radius_scale(scale_factor, min_value=0.0001, max_value=10.0):
 
 def reset_radius_scale():
     """Reset radius scale to default values"""
-    if st.session_state["selected_business_indices"]:
+    if st.session_state["selected_prospect_indices"]:
         st.session_state["selected_radius_scale"] = st.session_state["default_selected_radius_scale"]
     else:
         st.session_state["initial_radius_scale"] = 1.0
@@ -3768,12 +4928,49 @@ def apply_gradient_class(element_class, gradient_type="primary"):
     """, unsafe_allow_html=True)
 
 def main():
+    # Display Salesforce operation results if they exist
+    if 'sf_bulk_result' in st.session_state:
+        result = st.session_state.sf_bulk_result
+        
+        if result['newly_added'] > 0 or result['duplicates'] > 0 or result['errors'] > 0:
+            if result['newly_added'] > 0:
+                st.success(f"✅ Successfully added {result['newly_added']} prospects to Salesforce")
+            if result['duplicates'] > 0:
+                st.warning(f"⚠️ {result['duplicates']} prospects were duplicates and not added")
+            if result['errors'] > 0:
+                st.error(f"❌ {result['errors']} prospects failed to be added")
+            if result['already_tracked'] > 0:
+                st.info(f"ℹ️ {result['already_tracked']} prospects were already tracked in this session")
+                
+            # Show detailed messages in an expander
+            with st.expander("View detailed results"):
+                for message in result['messages']:
+                    st.write(message)
+        
+        # Clear the result after displaying
+        del st.session_state.sf_bulk_result
+    
+    if 'sf_single_result' in st.session_state:
+        result = st.session_state.sf_single_result
+        
+        if result['success']:
+            st.success(f"✅ {result['message']}")
+        elif result['is_duplicate']:
+            st.warning(f"⚠️ {result['message']}")
+        elif result['already_tracked']:
+            st.info(f"ℹ️ {result['message']}")
+        else:
+            st.error(f"❌ {result['message']}")
+        
+        # Clear the result after displaying
+        del st.session_state.sf_single_result
+
     filters, apply_filters = create_sidebar_filters()
 
     display_filter_summary(st.session_state["active_filters"])
     
-    # Ensure sf_business_ids is initialized
-    init_session_state_key("sf_business_ids", [])
+    # Ensure sf_prospect_ids is initialized
+    init_session_state_key("sf_prospect_ids", [])
     
     # Ensure sf_pushed_count is initialized
     init_session_state_key("sf_pushed_count", 0)
@@ -3781,7 +4978,7 @@ def main():
     # Ensure sf_last_update is initialized
     init_session_state_key("sf_last_update", datetime.now().isoformat())
     
-    tab1, tab2, tab3 = st.tabs(["List View", "Map View", "Salesforce"])
+    tab1, tab2, tab3 = st.tabs(["List View", "Map View", "Salesforce Queue"])
 
     if apply_filters and has_active_filters(filters):
         def fetch_data():
@@ -3790,9 +4987,16 @@ def main():
             return fetch_filtered_data(
                 filters, cache_key, st.session_state["page_size"], st.session_state["current_page"], fetch_all=True
             )
-        st.session_state["filtered_df"], st.session_state["total_records"] = with_loading_spinner(
-            "Fetching data...", fetch_data
-        )
+        result = with_loading_spinner("Fetching data...", fetch_data)
+        st.session_state["filtered_df"], st.session_state["total_records"], original_total = result
+        # Store the full DataFrame for internal logic (staging, etc.)
+        st.session_state["full_filtered_df"] = st.session_state["filtered_df"].copy()
+        
+        # Handle the warning outside of the cached function
+        if "limit_warning" in st.session_state:
+            del st.session_state["limit_warning"]
+        if original_total > MAX_RESULTS:
+            st.session_state["limit_warning"] = f"Result set contains {original_total} records, which exceeds the limit of {MAX_RESULTS}. Displaying the first {MAX_RESULTS} records."
         if "map_view_state" in st.session_state:
             del st.session_state.map_view_state
         if "point_selector" in st.session_state:
@@ -3809,19 +5013,18 @@ def main():
         show_total = st.session_state.get('total_records', 0)
         # --- Normalize columns and format for filter results ---
         if show_df is not None and not show_df.empty:
-            # Drop unnecessary columns but keep address fields for now
+            # Create display_df that includes ALL columns from the full data for internal logic
             display_df = show_df.copy()
-            # Add missing columns if not present
-            for col in [
-                "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
-                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE",
-                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "REVENUE",
-                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "IS_B2B", "IS_B2C", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE"
-            ]:
+            
+            # Add UI-only columns if not present
+            ui_columns = ["Map", "SF", "Current Customer", "ADDRESS_LINK", "FULL_ADDRESS"]
+            for col in ui_columns:
                 if col not in display_df.columns:
                     display_df[col] = ""  # Add empty column
+            
             display_df['Map'] = True
             display_df['SF'] = False
+            
             # Create a combined address column for Google Maps links
             address_cols = ['ADDRESS', 'CITY', 'STATE', 'ZIP']
             if all(col in display_df.columns for col in address_cols):
@@ -3839,14 +5042,31 @@ def main():
                 display_df['CONTACT_EMAIL'] = display_df['CONTACT_EMAIL'].apply(format_email_for_link)
             if 'PARENT_PHONE' in display_df.columns:
                 display_df['PARENT_PHONE'] = display_df['PARENT_PHONE'].apply(format_phone_for_link)
-            # Reorder columns to match sidebar filter output
-            column_order = [
+            
+            # Create preferred column order (UI columns first, then all data columns)
+            preferred_order = [
                 "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
-                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE",
+                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_NATIONAL_DNC", "INTERNAL_DNC", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE",
                 "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "REVENUE",
-                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C"
+                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C",
+                "IDENTIFIER", "ACTIVE_PRODUCTS", "PRODUCT_FAMILY"
             ]
-            display_df = display_df[column_order]
+            
+            # Get all columns in display_df
+            all_cols = display_df.columns.tolist()
+            
+            # Create final column order: preferred first, then any remaining columns
+            final_order = []
+            for col in preferred_order:
+                if col in all_cols:
+                    final_order.append(col)
+                    all_cols.remove(col)
+            
+            # Add any remaining columns that weren't in preferred_order
+            final_order.extend(all_cols)
+            
+            # Apply the column order
+            display_df = display_df[final_order]
 
             if "limit_warning" in st.session_state:
                 st.warning(st.session_state.limit_warning)
@@ -3880,18 +5100,13 @@ def main():
             min_height = (MIN_DISPLAY_ROWS * ROW_HEIGHT) + header_buffer  # Minimum for 2 rows
             max_height = MAX_DATAFRAME_HEIGHT  # Reduced maximum height
             dataframe_height = max(min_height, min(total_height, max_height))
-            display_df = show_df.iloc[start_idx:end_idx]
             
-            # Update column order to use FULL_ADDRESS and exclude individual address fields
-            column_order = [
-                "Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS",
-                "PHONE", "WEBSITE", "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE",
-                "PRIMARY_INDUSTRY", "SUB_INDUSTRY", "MCC_CODE", "REVENUE",
-                "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE", "IS_B2B", "IS_B2C"
-            ]
+            # Apply pagination to display_df
+            display_df = display_df.iloc[start_idx:end_idx]
             
-            # Initialize Map and SF columns with their default states
+            # Initialize Map and SF columns with their default states for the paginated data
             page_key = f"page_{st.session_state.current_page}_size_{st.session_state.page_size}"
+            display_df = display_df.copy()  # Make a copy to avoid SettingWithCopyWarning
             display_df['Map'] = True  # Default value for Map column
             display_df['SF'] = False  # Default value for SF column
             
@@ -3902,70 +5117,16 @@ def main():
                 )
             else:
                 display_df['Current Customer'] = "⚪"
-            display_df = display_df.drop(columns=['LONGITUDE', 'LATITUDE', 'IS_CURRENT_CUSTOMER'], errors='ignore')            
+            
+            # Drop columns that are not needed for display (but keep them in full_filtered_df)
+            columns_to_drop = ['LONGITUDE', 'LATITUDE', 'IS_CURRENT_CUSTOMER'] + get_hidden_columns()
+            display_df = display_df.drop(columns=columns_to_drop, errors='ignore')
+            
             # Format URLs to ensure they are absolute URLs
             if 'WEBSITE' in display_df.columns:
                 display_df['WEBSITE'] = display_df['WEBSITE'].apply(format_url)
             if 'PARENT_WEBSITE' in display_df.columns:
                 display_df['PARENT_WEBSITE'] = display_df['PARENT_WEBSITE'].apply(format_url)
-            
-            # Create a combined address column for Google Maps links
-            address_cols = ['ADDRESS', 'CITY', 'STATE', 'ZIP']
-            if all(col in display_df.columns for col in address_cols):
-                # Create combined address parts list and add Address Link column
-                display_df['ADDRESS_LINK'] = display_df.apply(create_address_link, axis=1)
-                
-                # Add the FULL_ADDRESS column
-                display_df['FULL_ADDRESS'] = display_df.apply(create_full_address, axis=1)
-                
-                # Reorder columns to put ADDRESS_LINK right after DBA_NAME and before FULL_ADDRESS
-                if 'DBA_NAME' in display_df.columns:
-                    # Get all columns
-                    cols = display_df.columns.tolist()
-                    
-                    # Start with specified columns in order
-                    ordered_cols = []
-                    for col in ["Map", "SF", "Current Customer", "DBA_NAME", "ADDRESS_LINK", "FULL_ADDRESS", "PHONE"]:
-                        if col in cols:
-                            ordered_cols.append(col)
-                            cols.remove(col)
-                    
-                    # Add WEBSITE directly (not after identifier)
-                    if "WEBSITE" in cols:
-                        ordered_cols.append("WEBSITE")
-                        cols.remove("WEBSITE")
-                    
-                    # Remove identifier from the columns list to add it at the end
-                    if "IDENTIFIER" in cols:
-                        cols.remove("IDENTIFIER")
-                    
-                    # Remove individual address columns
-                    for addr_col in ['ADDRESS', 'CITY', 'STATE', 'ZIP']:
-                        if addr_col in cols:
-                            cols.remove(addr_col)
-                    
-                    # Add remaining columns
-                    ordered_cols.extend(cols)
-                    
-                    # Add identifier at the very end
-                    if "IDENTIFIER" in display_df.columns:
-                        ordered_cols.append("IDENTIFIER")
-                    
-                    # Apply the new order
-                    display_df = display_df[ordered_cols]
-            
-            # Format phone numbers for clickable tel: links  
-            if 'PHONE' in display_df.columns:
-                display_df['PHONE'] = display_df['PHONE'].apply(format_phone_for_link)
-            if 'CONTACT_PHONE' in display_df.columns:
-                display_df['CONTACT_PHONE'] = display_df['CONTACT_PHONE'].apply(format_phone_for_link)
-            if 'CONTACT_MOBILE' in display_df.columns:
-                display_df['CONTACT_MOBILE'] = display_df['CONTACT_MOBILE'].apply(format_phone_for_link)
-            # Format email addresses for clickable mailto: links
-            if 'CONTACT_EMAIL' in display_df.columns:
-                display_df['CONTACT_EMAIL'] = display_df['CONTACT_EMAIL'].apply(format_email_for_link)
-            if 'PARENT_PHONE' in display_df.columns:
-                display_df['PARENT_PHONE'] = display_df['PARENT_PHONE'].apply(format_phone_for_link)
             
             styled_df = display_df#.style.format(get_dataframe_format_config())
             def apply_gp_branding(row):
@@ -4005,7 +5166,7 @@ def main():
                             f'box-shadow: 0 3px 12px rgba(38, 42, 255, 0.12);'
                         )
                     elif col in ['NUMBER_OF_EMPLOYEES', 'NUMBER_OF_LOCATIONS']:
-                        # Business metrics get tertiary color accent
+                        # prospect metrics get tertiary color accent
                         styles.append(
                             f'{bg_gradient} '
                             f'border-left: 3px solid #4da8da; '
@@ -4196,13 +5357,51 @@ def main():
                         st.session_state.data_editor_refresh_counter += 1
                         st.rerun()
                 
-                editor_key = f"business_selector_{page_key}_{st.session_state.data_editor_refresh_counter}"
+                editor_key = f"prospect_selector_{page_key}_{st.session_state.data_editor_refresh_counter}"
                 
                 # Display the data editor without any callbacks
                 # Let Streamlit handle the state naturally
                 # Pre-format REVENUE column for display with commas and dollar sign
                 if "REVENUE" in display_df.columns:
                     display_df["REVENUE"] = display_df["REVENUE"].apply(lambda x: f"${int(x):,}" if pd.notnull(x) else "-")
+                
+                # Format array columns for better readability
+                def format_array_field(x):
+                    """Format array fields to be more readable by converting to bullet list"""
+                    if pd.isna(x) or x is None or str(x).strip() == "":
+                        return "-"
+                    
+                    # Handle string representation of arrays
+                    x_str = str(x).strip()
+                    
+                    # Remove brackets and quotes, then split by comma
+                    if x_str.startswith('[') and x_str.endswith(']'):
+                        # Remove outer brackets
+                        x_str = x_str[1:-1].strip()
+                    
+                    if not x_str:
+                        return "-"
+                    
+                    # Split by comma and clean up each item
+                    items = []
+                    for item in x_str.split(','):
+                        cleaned_item = item.strip().strip('"').strip("'").strip()
+                        if cleaned_item:
+                            items.append(cleaned_item)
+                    
+                    if not items:
+                        return "-"
+                    
+                    # Return as bullet points for readability
+                    return "• " + "\n• ".join(items)
+                
+                # Apply formatting to array columns
+                if "ACTIVE_PRODUCTS" in display_df.columns:
+                    display_df["ACTIVE_PRODUCTS"] = display_df["ACTIVE_PRODUCTS"].apply(format_array_field)
+                
+                if "PRODUCT_FAMILY" in display_df.columns:
+                    display_df["PRODUCT_FAMILY"] = display_df["PRODUCT_FAMILY"].apply(format_array_field)
+                
                 edited_df = st.data_editor(
                     display_df,
                     use_container_width=True,
@@ -4215,44 +5414,46 @@ def main():
                 
                 # Process the current selections without complex state management
                 if 'Map' in edited_df.columns and 'SF' in edited_df.columns:
-                    # Process selected businesses for map
+                    # Process selected prospectes for map
                     selected_for_map = edited_df[edited_df['Map'] == True].copy()
-                    st.session_state.selected_map_businesses = selected_for_map
+                    st.session_state.selected_map_prospectes = selected_for_map
                     
                     if len(selected_for_map) > 0:
-                        st.caption(f"📍 {len(selected_for_map)} businesses selected for mapping")
+                        st.caption(f"📍 {len(selected_for_map)} prospectes selected for mapping")
                     else:
-                        st.caption("📍 No businesses selected - map will be empty")
+                        st.caption("📍 No prospectes selected - map will be empty")
                     
-                    # Process selected businesses for Salesforce
+                    # Process selected prospectes for Salesforce
                     selected_for_sf = edited_df[edited_df['SF'] == True].copy()
                     
                     # Don't automatically add to Salesforce - just show what's selected
                     # The actual push will happen when the button is clicked
                     
                     if len(selected_for_sf) > 0:
-                        st.caption(f"🚀 {len(selected_for_sf)} businesses selected for Salesforce")
+                        st.caption(f"{len(selected_for_sf)} prospectes selected for salesforce")
                         
-                        # Check if all selected businesses are already pushed
-                        all_pushed = True
-                        for _, business in selected_for_sf.iterrows():
-                            business_idx = business.name if hasattr(business, 'name') else None
-                            business_idx_str = str(business_idx)
-                            if business_idx_str not in get_sf_business_ids():
-                                all_pushed = False
+                        # Check if all selected prospects are already staged (in queue), not submitted
+                        all_staged = True
+                        staged_prospect_ids = [str(p.get("prospect_id")) for p in st.session_state.get("staged_prospects", []) if p.get("prospect_id")]
+                        
+                        for _, prospect in selected_for_sf.iterrows():
+                            prospect_id = prospect.get("PROSPECT_ID") or prospect.get("IDENTIFIER")
+                            prospect_id_str = str(prospect_id)
+                            if prospect_id_str not in staged_prospect_ids:
+                                all_staged = False
                                 break
                         
                         # Create columns for left-justified button layout
                         button_col1, button_col2 = create_wide_button_layout()
                         
                         with button_col1:
-                            if all_pushed:
-                                # Show success message instead of button when all are pushed
-                                success_msg = f'<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✓ All pushed</p>'
+                            if all_staged:
+                                # Show message when all are already staged in queue
+                                success_msg = f'<p style="color:#ff8c00; font-size:11px; margin:0; padding:0; font-weight:500;">⚠ All already in queue</p>'
                                 st.markdown(success_msg, unsafe_allow_html=True)
                             else:
                                 # Salesforce Push Button - left-justified, not full width
-                                button_label = "Send Selected to Salesforce"
+                                button_label = "Add Selected to Salesforce Queue"
                                 
                                 # Add CSS for button styling but remove full-width
                                 st.markdown("""
@@ -4265,10 +5466,91 @@ def main():
                                 """, unsafe_allow_html=True)
                                 
                                 if st.button(button_label, type="primary", key="sf_push_button"):
-                                    # Only add to Salesforce when button is actually clicked
-                                    add_businesses_to_salesforce(selected_for_sf)
+                                    # Check if there are multiple contacts available for this prospect
+                                    top_contacts = selected_for_sf.get("TOP10_CONTACTS", {})
+                                    contacts_available = []
                                     
-                                    # The success message will show on next rerun when all_pushed becomes True
+                                    # Parse TOP10_CONTACTS - handle pandas Series
+                                    has_contacts = False
+                                    if hasattr(top_contacts, 'empty'):  # pandas Series
+                                        has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+                                        if has_contacts:
+                                            top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+                                    else:
+                                        has_contacts = bool(top_contacts)
+                                    
+                                    if has_contacts:
+                                        if isinstance(top_contacts, str):
+                                            try:
+                                                import json
+                                                contacts_obj = json.loads(top_contacts)
+                                            except:
+                                                contacts_obj = {}
+                                        else:
+                                            contacts_obj = top_contacts
+                                        
+                                        if isinstance(contacts_obj, dict) and contacts_obj:
+                                            contacts_available = list(contacts_obj.values())
+                                        elif isinstance(contacts_obj, list) and contacts_obj:
+                                            contacts_available = contacts_obj
+                                    
+                                    # Stage prospects with appropriate contact handling
+                                    staged_count = 0
+                                    skipped_count = 0
+                                    
+                                    # Use the original show_df which has all columns (before display filtering)
+                                    show_df = st.session_state.get('filtered_df', None)
+                                    
+                                    for _, prospect_display in selected_for_sf.iterrows():
+                                        # The prospect_display doesn't have PROSPECT_ID because it's hidden from display
+                                        # So we need to get it from the original data using the row index
+                                        display_row_index = prospect_display.name  # This is the DataFrame row index
+                                        
+                                        # Get the original row from show_df using the same index
+                                        if show_df is not None and display_row_index in show_df.index:
+                                            # Get the full row from original data which has all columns
+                                            prospect = show_df.loc[display_row_index]
+                                        else:
+                                            # Fallback: try to find by DBA_NAME if index lookup fails
+                                            company_name = prospect_display.get("DBA_NAME")
+                                            if company_name and show_df is not None:
+                                                matching_rows = show_df[show_df["DBA_NAME"] == company_name]
+                                                if not matching_rows.empty:
+                                                    prospect = matching_rows.iloc[0]
+                                                else:
+                                                    prospect = prospect_display
+                                            else:
+                                                prospect = prospect_display
+                                        
+                                        # For single prospect, if multiple contacts available, use the first one from TOP10_CONTACTS
+                                        # Otherwise, use default main table contact
+                                        selected_contact = None
+                                        if len(contacts_available) > 0:
+                                            # Use the first contact from TOP10_CONTACTS (highest priority)
+                                            selected_contact = contacts_available[0]
+                                        
+                                        staging_result = add_prospect_to_staging(prospect, selected_contact)
+                                        
+                                        if staging_result:
+                                            staged_count += 1
+                                        else:
+                                            skipped_count += 1
+                                    
+                                    # Show confirmation message
+                                    if staged_count > 0:
+                                        if skipped_count > 0:
+                                            st.success(f"✅ Added {staged_count} prospects to Salesforce Queue({skipped_count} already added)")
+                                        else:
+                                            st.success(f"✅ Added {staged_count} prospects to Salesforce Queue")
+                                        if len(contacts_available) > 1:
+                                            st.info("💡 Go to the Salesforce tab to review contacts and submit")
+                                        else:
+                                            st.info("💡 Go to the Salesforce tab to review and submit")
+                                    else:
+                                        st.warning("⚠️ All selected prospects are already staged")
+                                    
+                                    # Brief pause to show message before rerun
+                                    time.sleep(1.5)
                                     st.rerun()
             
             with_loading_spinner("Loading data...", load_data_editor)
@@ -4287,15 +5569,15 @@ def main():
             if lon_col in st.session_state.filtered_df.columns and lat_col in st.session_state.filtered_df.columns:
                 def fetch_map_data():
                     cache_key = create_cache_key("map_data", st.session_state.active_filters)
-                    map_df, total_records = fetch_filtered_data(
+                    map_df, total_records, original_total = fetch_filtered_data(
                         st.session_state.active_filters, cache_key, st.session_state.page_size, 1, fetch_all=True
                     )
-                    return map_df, total_records
+                    return map_df, total_records  # Only return 2 values for map
 
                 map_df, total_records = with_loading_spinner("Fetching all data for map...", fetch_map_data)
                 # Logical columns to display on the map
                 logical_cols = [
-                    "DBA_NAME", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "REVENUE",
+                    "PROSPECT_ID", "DBA_NAME", "NUMBER_OF_EMPLOYEES", "NUMBER_OF_LOCATIONS", "REVENUE",
                     "ADDRESS", "CITY", "STATE", "ZIP", "PHONE", "WEBSITE", "PARENT_NAME", "PARENT_PHONE", "PARENT_WEBSITE",
                     "CONTACT_NAME", "CONTACT_EMAIL", "CONTACT_PHONE", "CONTACT_MOBILE", "CONTACT_JOB_TITLE", "DATA_AGG_UID", 
                     "IS_CURRENT_CUSTOMER", "TOP10_CONTACTS", "INTERNAL_DNC", "CONTACT_NATIONAL_DNC"
@@ -4314,18 +5596,18 @@ def main():
                     (map_data["lon"].between(-180, 180))
                 ]
 
-                # Filter map data based on selected businesses from list view
-                if hasattr(st.session_state, 'selected_map_businesses'):
+                # Filter map data based on selected prospectes from list view
+                if hasattr(st.session_state, 'selected_map_prospectes'):
                     # User has interacted with the list view checkboxes
-                    if len(st.session_state.selected_map_businesses) > 0:
-                        # Some businesses are selected - show only those
-                        selected_business_names = st.session_state.selected_map_businesses['DBA_NAME'].tolist()
-                        map_data = map_data[map_data['DBA_NAME'].isin(selected_business_names)]
+                    if len(st.session_state.selected_map_prospectes) > 0:
+                        # Some prospectes are selected - show only those
+                        selected_prospect_names = st.session_state.selected_map_prospectes['DBA_NAME'].tolist()
+                        map_data = map_data[map_data['DBA_NAME'].isin(selected_prospect_names)]
                     else:
-                        # No businesses selected (user unchecked all) - show empty map
+                        # No prospectes selected (user unchecked all) - show empty map
                         map_data = map_data.iloc[0:0]  # Empty dataframe with same structure
                 else:
-                    # User hasn't interacted with list view yet - show all businesses by default
+                    # User hasn't interacted with list view yet - show all prospectes by default
                     pass
                 
                 if len(map_data) > MAP_POINTS_LIMIT:
@@ -4340,7 +5622,7 @@ def main():
                         tooltip_style = create_tooltip_style(is_dark_map)
                         header_style = create_tooltip_header_style(is_dark_map)
 
-                        # Build sections with proper data validation (same logic as selected business card)
+                        # Build sections with proper data validation (same logic as selected prospect card)
                         sections = build_tooltip_sections(row)
 
                         # Generate tooltip content with consolidated styling
@@ -4421,28 +5703,28 @@ def main():
                             "longitude": center_lon,
                             "zoom": default_zoom
                         })
-                    init_session_state_key("selected_business_indices", [])
+                    init_session_state_key("selected_prospect_indices", [])
                     
                     # Migrate from old single selection to new multiple selection (if it exists)
-                    if hasattr(st.session_state, 'selected_business_index') and st.session_state.selected_business_index is not None:
-                        st.session_state.selected_business_indices = [st.session_state.selected_business_index]
-                        delattr(st.session_state, 'selected_business_index')
+                    if hasattr(st.session_state, 'selected_prospect_index') and st.session_state.selected_prospect_index is not None:
+                        st.session_state.selected_prospect_indices = [st.session_state.selected_prospect_index]
+                        delattr(st.session_state, 'selected_prospect_index')
                     
                     # Clean up any indices that are no longer in the data
-                    st.session_state.selected_business_indices = [
-                        idx for idx in st.session_state.selected_business_indices 
+                    st.session_state.selected_prospect_indices = [
+                        idx for idx in st.session_state.selected_prospect_indices 
                         if idx in map_data.index
                     ]
-                    # Sort businesses alphabetically by name for better user experience
+                    # Sort prospectes alphabetically by name for better user experience
                     sorted_map_data = map_data.sort_values("DBA_NAME")
                     
-                    # Create business options as list of DATA_AGG_UIDs (unique IDs)
-                    business_options = [row["DATA_AGG_UID"] for _, row in sorted_map_data.iterrows()]
+                    # Create prospect options as list of DATA_AGG_UIDs (unique IDs)
+                    prospect_options = [row["DATA_AGG_UID"] for _, row in sorted_map_data.iterrows()]
                     # Map UID to index and UID to display name (optionally with address for clarity)
-                    business_uid_to_index = {row["DATA_AGG_UID"]: row["index"] for _, row in sorted_map_data.iterrows()}
+                    prospect_uid_to_index = {row["DATA_AGG_UID"]: row["index"] for _, row in sorted_map_data.iterrows()}
                     # Assign a display number for each duplicate DBA_NAME
                     dba_name_counts = {}
-                    business_uid_to_label = {}
+                    prospect_uid_to_label = {}
                     for _, row in sorted_map_data.iterrows():
                         dba = row["DBA_NAME"]
                         dba_name_counts[dba] = dba_name_counts.get(dba, 0) + 1
@@ -4452,59 +5734,59 @@ def main():
                             label = f"{dba} [{display_number}]"
                         else:
                             label = dba
-                        business_uid_to_label[row["DATA_AGG_UID"]] = label
+                        prospect_uid_to_label[row["DATA_AGG_UID"]] = label
 
                     # Get current selection for multiselect (as DATA_AGG_UIDs)
                     current_selection = []
-                    if st.session_state.selected_business_indices:
-                        for idx in st.session_state.selected_business_indices:
+                    if st.session_state.selected_prospect_indices:
+                        for idx in st.session_state.selected_prospect_indices:
                             match = sorted_map_data.loc[sorted_map_data["index"] == idx]
                             if not match.empty:
                                 current_selection.append(match.iloc[0]["DATA_AGG_UID"])
 
                     # Use multiselect with DATA_AGG_UID as value, DBA_NAME (and address) as display
-                    selected_businesses = st.multiselect(
-                        "🔍 Search and select up to 5 businesses to view details",
-                        options=business_options,
+                    selected_prospectes = st.multiselect(
+                        "🔍 Search and select up to 5 prospectes to view details",
+                        options=prospect_options,
                         default=current_selection,
-                        key="business_multiselect",
-                        help="Type to search and select up to 5 businesses - alphabetically sorted",
+                        key="prospect_multiselect",
+                        help="Type to search and select up to 5 prospectes - alphabetically sorted",
                         max_selections=5,
-                        placeholder="Type to search business names...",
-                        format_func=lambda uid: business_uid_to_label.get(uid, str(uid))
+                        placeholder="Type to search prospect names...",
+                        format_func=lambda uid: prospect_uid_to_label.get(uid, str(uid))
                     )
 
                     # Handle selection logic - allow multiple selections
                     selected_indices = []
-                    if selected_businesses:
-                        selected_indices = [business_uid_to_index[uid] for uid in selected_businesses]
+                    if selected_prospectes:
+                        selected_indices = [prospect_uid_to_index[uid] for uid in selected_prospectes]
                     
                     # Show total count
-                    if hasattr(st.session_state, 'selected_map_businesses'):
-                        if len(st.session_state.selected_map_businesses) > 0:
-                            st.caption(f"Showing {len(map_data)} selected businesses on map • {len(selected_businesses)}/5 selected")
+                    if hasattr(st.session_state, 'selected_map_prospectes'):
+                        if len(st.session_state.selected_map_prospectes) > 0:
+                            st.caption(f"Showing {len(map_data)} selected prospectes on map • {len(selected_prospectes)}/5 selected")
                         else:
-                            st.caption(f"No businesses selected for mapping - map is empty • {len(selected_businesses)}/5 selected")
+                            st.caption(f"No prospectes selected for mapping - map is empty • {len(selected_prospectes)}/5 selected")
                     else:
-                        st.caption(f"Showing all {len(map_data)} businesses on map (default) • {len(selected_businesses)}/5 selected")
+                        st.caption(f"Showing all {len(map_data)} prospectes on map (default) • {len(selected_prospectes)}/5 selected")
                     
                     # Update session state with new selections
-                    if set(selected_indices) != set(st.session_state.selected_business_indices):
-                        st.session_state.selected_business_indices = selected_indices
+                    if set(selected_indices) != set(st.session_state.selected_prospect_indices):
+                        st.session_state.selected_prospect_indices = selected_indices
                         
-                        # Calculate new map view state to encompass all selected businesses
+                        # Calculate new map view state to encompass all selected prospectes
                         if selected_indices:
                             selected_data = map_data.loc[map_data.index.isin(selected_indices)]
                             if len(selected_indices) == 1:
                                 # Single selection - zoom in close
-                                single_business = selected_data.iloc[0]
+                                single_prospect = selected_data.iloc[0]
                                 st.session_state.map_view_state = {
-                                    "latitude": float(single_business["lat"]),
-                                    "longitude": float(single_business["lon"]),
-                                    "zoom": SELECTED_BUSINESS_ZOOM
+                                    "latitude": float(single_prospect["lat"]),
+                                    "longitude": float(single_prospect["lon"]),
+                                    "zoom": SELECTED_prospect_ZOOM
                                 }
                             else:
-                                # Multiple selections - fit all businesses in view with padding
+                                # Multiple selections - fit all prospectes in view with padding
                                 selected_lat_min, selected_lat_max = selected_data["lat"].min(), selected_data["lat"].max()
                                 selected_lon_min, selected_lon_max = selected_data["lon"].min(), selected_data["lon"].max()
                                 selected_center_lat = (selected_lat_min + selected_lat_max) / 2
@@ -4531,10 +5813,10 @@ def main():
                                     # Reduced zoom calculation for better visibility (SAME AS INITIAL MAP VIEW)
                                     selected_zoom = min(lat_zoom, lon_zoom) - 2  # Same -2 reduction as initial view
                                     
-                                    # Special handling for 2-3 business selections (more aggressive zoom-in)
-                                    num_selected = len(st.session_state.selected_business_indices)
+                                    # Special handling for 2-3 prospect selections (more aggressive zoom-in)
+                                    num_selected = len(st.session_state.selected_prospect_indices)
                                     if num_selected == 2 or num_selected == 3:
-                                        # For 2-3 businesses, use a much higher minimum zoom for closer view
+                                        # For 2-3 prospectes, use a much higher minimum zoom for closer view
                                         selected_zoom = max(selected_zoom, 11)  # Increased from 8 to 11 for much closer view
                                         selected_zoom = min(selected_zoom, 14)  # Allow up to 14 for very close viewing
                                     elif num_selected <= 3:
@@ -4581,8 +5863,8 @@ def main():
                         if row.get('IS_CURRENT_CUSTOMER', False) is True:
                             return [244, 54, 76, 200]  # Global Raspberry
                         if selected:
-                            # Use selected business color logic (existing)
-                            idx = st.session_state.selected_business_indices.index(row['index']) if row['index'] in st.session_state.selected_business_indices else 0
+                            # Use selected prospect color logic (existing)
+                            idx = st.session_state.selected_prospect_indices.index(row['index']) if row['index'] in st.session_state.selected_prospect_indices else 0
                             selected_colors = [
                                 [255, 204, 0, 200],     # Sunshine
  
@@ -4590,87 +5872,124 @@ def main():
                             return selected_colors[idx % len(selected_colors)]
                         return get_non_selected_color()
                     
-                    # Display selected business details
-                    if st.session_state.selected_business_indices:
-                        # Define colors for selected businesses using Global Payments tertiary palette
+                    # Display selected prospect details
+                    if st.session_state.selected_prospect_indices:
+                        # Define colors for selected prospectes using Global Payments tertiary palette
                         selected_colors = [
                             [255, 204, 0, 200],     # Sunshine
 
                         ]
                         
-                        selected_business_data = map_data.loc[map_data.index.isin(st.session_state.selected_business_indices)]
+                        selected_prospect_data = map_data.loc[map_data.index.isin(st.session_state.selected_prospect_indices)]
                         
                         
-                        def format_business_data_html(business_data):
-                            """Generate business card HTML with simplified structure"""
-                            business_idx_str = str(business_data.name if hasattr(business_data, 'name') else business_data.get('BUSINESS_ID', ''))
-                            already_pushed = business_idx_str in get_sf_business_ids()
+                        def format_prospect_data_html(prospect_data):
+                            """Generate prospect card HTML with simplified structure"""
+                            prospect_id = prospect_data.get("PROSPECT_ID") or prospect_data.get("IDENTIFIER")
+                            prospect_id_str = str(prospect_id)
+                            already_pushed = prospect_id_str in get_sf_prospect_ids()
                             
 
                             # Add INTERNAL_DNC flag if needed
                             dnc_flag = ''
-                            dnc_val = business_data.get("INTERNAL_DNC")
+                            dnc_val = prospect_data.get("INTERNAL_DNC")
                             if dnc_val == 1:
-                                dnc_flag = '<span style="color:red; font-weight:bold; font-size:1.1em; margin-left:12px;">🚫 INTERNAL DNC</span>'
+                                dnc_flag = '<span style="color:red; font-weight:bold; font-size:1.1em; margin-left:12px;">🚫 INTERNAL Do Not Contact</span>'
 
                             # Build header
-                            sf_status = '<span class="sf-push-status">✓ Pushed to Salesforce</span>' if already_pushed else ''
-                            header = f'<h3><div class="business-name-container">{business_data["DBA_NAME"]}{dnc_flag}</div>{sf_status}</h3>'
+                            sf_status = '<span class="sf-push-status">✓ Pushed to Salesforce Queue</span>' if already_pushed else ''
+                            header = f'<h3><div class="prospect-name-container">{prospect_data["DBA_NAME"]}{dnc_flag}</div>{sf_status}</h3>'
                             
                             # Build sections using consolidated helper
-                            sections = build_business_card_sections(business_data)
+                            sections = build_prospect_card_sections(prospect_data)
                             
-                            return f'''<div class="business-details-card">{header}<div class="business-data-dashboard">{"".join(sections)}</div></div>'''
+                            return f'''<div class="prospect-details-card">{header}<div class="prospect-data-dashboard">{"".join(sections)}</div></div>'''
                         
-                        if len(st.session_state.selected_business_indices) == 1:
-                            # Single business - show full details
-                            business_data = selected_business_data.iloc[0]
-                            st.markdown(format_business_data_html(business_data), unsafe_allow_html=True)
+                        if len(st.session_state.selected_prospect_indices) == 1:
+                            # Single prospect - show full details
+                            prospect_data = selected_prospect_data.iloc[0]
+                            st.markdown(format_prospect_data_html(prospect_data), unsafe_allow_html=True)
                             
                             # Add native Streamlit button for Salesforce action
-                            business_idx = business_data.name if hasattr(business_data, 'name') else None
-                            sf_key = f"sf_push_{business_idx}"
-                            business_name = business_data.get("DBA_NAME", "")
+                            prospect_id = prospect_data.get("PROSPECT_ID") or prospect_data.get("IDENTIFIER")
+                            sf_key = f"sf_push_{prospect_id}"
+                            prospect_name = prospect_data.get("DBA_NAME", "")
                             
-                            # Check if this business was already pushed to Salesforce
-                            business_idx_str = str(business_idx)
-                            already_pushed = business_idx_str in get_sf_business_ids()
+                            # Check if this prospect was already pushed to Salesforce
+                            prospect_id_str = str(prospect_id)
+                            already_pushed = prospect_id_str in get_sf_prospect_ids()
                             
                             if not already_pushed:
                                 # Create columns for left-justified button
                                 sf_cols = create_button_layout()
                                 with sf_cols[0]:  # Button in left column
-                                    # Updated button label with business name
-                                    button_label = f"Send {business_name} to Salesforce"
-                                    
+                                    # Updated button label with prospect name
+                                    button_label = f"Add {prospect_name} to Salesforce Queue"
+
                                     push_button = st.button(button_label, type="primary", key=sf_key)
                                     
                                     if push_button:
-                                        # Make sure we have the complete business data
-                                        business_idx = business_data.name if hasattr(business_data, 'name') else None
+                                        # Check if there are multiple contacts available for this prospect
+                                        top_contacts = prospect_data.get("TOP10_CONTACTS", {})
+                                        contacts_available = []
                                         
-                                        # Add this business to Salesforce
-                                        add_business_to_salesforce(business_idx)
+                                        # Parse TOP10_CONTACTS - handle pandas Series
+                                        has_contacts = False
+                                        if hasattr(top_contacts, 'empty'):  # pandas Series
+                                            has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+                                            if has_contacts:
+                                                top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+                                        else:
+                                            has_contacts = bool(top_contacts)
                                         
-                                        # Show success message with compact styling
-                                        success_msg = f'<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✓ Added to Salesforce</p>'
-                                        st.markdown(success_msg, unsafe_allow_html=True)
+                                        if has_contacts:
+                                            if isinstance(top_contacts, str):
+                                                try:
+                                                    import json
+                                                    contacts_obj = json.loads(top_contacts)
+                                                except:
+                                                    contacts_obj = {}
+                                            else:
+                                                contacts_obj = top_contacts
+                                            
+                                            if isinstance(contacts_obj, dict) and contacts_obj:
+                                                contacts_available = list(contacts_obj.values())
+                                            elif isinstance(contacts_obj, list) and contacts_obj:
+                                                contacts_available = contacts_obj
                                         
-                                        # Log for debugging
-                                        print(f"Pushed business ID {business_idx} to Salesforce")
-                                        print(f"Total businesses in Salesforce: {st.session_state.sf_pushed_count}")
+                                        # Use the first contact from TOP10_CONTACTS if available
+                                        selected_contact = None
+                                        if len(contacts_available) > 0:
+                                            selected_contact = contacts_available[0]
+                                        
+                                        # Add this prospect to staging instead of direct submission
+                                        staging_result = add_prospect_to_staging(prospect_data, selected_contact)
+                                        if staging_result:
+                                            success_msg = f'<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✅ {prospect_name} sent to Salesforce Queue</p>'
+                                            st.markdown(success_msg, unsafe_allow_html=True)
+                                            if len(contacts_available) > 1:
+                                                st.info("💡 Go to the Salesforce tab to review contacts and submit")
+                                            else:
+                                                st.info("💡 Go to the Salesforce tab to review and submit")
+                                        else:
+                                            warning_msg = f'<p style="color:#ff8c00; font-size:11px; margin:0; padding:0; font-weight:500;">⚠️ {prospect_name} already sent to Salesforce Queue</p>'
+                                            st.markdown(warning_msg, unsafe_allow_html=True)
                                         
                                         # Rerun to update UI
                                         st.rerun()
                         else:
-                            # Multiple businesses - show in tabs and add bulk actions
+                            # Multiple prospectes - show in tabs and add bulk actions
                             
-                            # Check if all selected businesses are already pushed
+                            # Check if all selected prospectes are already pushed
                             all_pushed = True
-                            for idx in st.session_state.selected_business_indices:
-                                if str(idx) not in get_sf_business_ids():
-                                    all_pushed = False
-                                    break
+                            for idx in st.session_state.selected_prospect_indices:
+                                # Get the prospect data for this index
+                                prospect_row = selected_prospect_data.loc[selected_prospect_data.index == idx]
+                                if not prospect_row.empty:
+                                    prospect_id = prospect_row.iloc[0].get("PROSPECT_ID") or prospect_row.iloc[0].get("IDENTIFIER")
+                                    if str(prospect_id) not in get_sf_prospect_ids():
+                                        all_pushed = False
+                                        break
                             
                             # Add compact bulk push button - left justified
                             # Create columns for left-justified button layout
@@ -4679,10 +5998,10 @@ def main():
                             with btn_col1:
                                 if all_pushed:
                                     # Use markdown with custom styling - left-justified
-                                    st.markdown('<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✓ All pushed</p>', unsafe_allow_html=True)
+                                    st.markdown('<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✓ Already Sent to Salesforce Queue</p>', unsafe_allow_html=True)
                                 else:
                                     # Updated button label
-                                    button_label = "Send Selected to Salesforce"
+                                    button_label = "Add Selected to Salesforce Queue"
                                     
                                     # Add CSS to prevent button text wrapping
                                     st.markdown("""
@@ -4697,57 +6016,110 @@ def main():
                                     bulk_push = st.button(button_label, 
                                                 type="primary", key="sf_bulk_push_button")
                                     if bulk_push:
-                                        # Get the subset of businesses that are selected
-                                        selected_businesses = selected_business_data.loc[selected_business_data.index.isin(st.session_state.selected_business_indices)].copy()
+                                        # Get the subset of prospectes that are selected
+                                        selected_prospectes = selected_prospect_data.loc[selected_prospect_data.index.isin(st.session_state.selected_prospect_indices)].copy()
                                         
-                                        # Add each business to Salesforce
-                                        count = add_businesses_to_salesforce(selected_businesses)
+                                        # Stage prospects with appropriate contact handling
+                                        staged_count = 0
+                                        skipped_count = 0
                                         
-                                        # Rerun to update UI
+                                        for _, prospect in selected_prospectes.iterrows():
+                                            # Check if there are multiple contacts available for this prospect
+                                            top_contacts = prospect.get("TOP10_CONTACTS", {})
+                                            contacts_available = []
+                                            
+                                            # Parse TOP10_CONTACTS - handle pandas Series
+                                            has_contacts = False
+                                            if hasattr(top_contacts, 'empty'):  # pandas Series
+                                                has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+                                                if has_contacts:
+                                                    top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+                                            else:
+                                                has_contacts = bool(top_contacts)
+                                            
+                                            if has_contacts:
+                                                if isinstance(top_contacts, str):
+                                                    try:
+                                                        import json
+                                                        contacts_obj = json.loads(top_contacts)
+                                                    except:
+                                                        contacts_obj = {}
+                                                else:
+                                                    contacts_obj = top_contacts
+                                                
+                                                if isinstance(contacts_obj, dict) and contacts_obj:
+                                                    contacts_available = list(contacts_obj.values())
+                                                elif isinstance(contacts_obj, list) and contacts_obj:
+                                                    contacts_available = contacts_obj
+                                            
+                                            # Use the first contact from TOP10_CONTACTS if available
+                                            selected_contact = None
+                                            if len(contacts_available) > 0:
+                                                selected_contact = contacts_available[0]
+                                            
+                                            if add_prospect_to_staging(prospect, selected_contact):
+                                                staged_count += 1
+                                            else:
+                                                skipped_count += 1
+                                        
+                                        # Show confirmation message
+                                        if staged_count > 0:
+                                            if skipped_count > 0:
+                                                st.success(f"✅ Added {staged_count} prospects to Salesforce Queue ({skipped_count} already added)")
+                                            else:
+                                                st.success(f"✅ Added {staged_count} prospects to Salesforce Queue")
+                                            st.info("💡 Go to the Salesforce tab to review contacts and submit")
+                                        else:
+                                            st.warning("⚠️ All selected prospects are already added to Salesforce queue")
+                                        
+                                        # Brief pause to show message before rerun
+                                        time.sleep(1.5)
                                         st.rerun()
                             
-                            # Multiple businesses - show in tabs
-                            business_names = []
-                            for idx in st.session_state.selected_business_indices:
-                                name = selected_business_data.loc[selected_business_data.index == idx, "DBA_NAME"].iloc[0]
+                            # Multiple prospectes - show in tabs
+                            prospect_names = []
+                            for idx in st.session_state.selected_prospect_indices:
+                                prospect_row = selected_prospect_data.loc[selected_prospect_data.index == idx]
+                                name = prospect_row["DBA_NAME"].iloc[0]
                                 # Add indicator if already pushed
-                                idx_str = str(idx)
-                                already_pushed = idx_str in get_sf_business_ids()
+                                prospect_id = prospect_row.iloc[0].get("PROSPECT_ID") or prospect_row.iloc[0].get("IDENTIFIER")
+                                prospect_id_str = str(prospect_id)
+                                already_pushed = prospect_id_str in get_sf_prospect_ids()
                                 if already_pushed:
                                     name = f"{name} ✓"
-                                business_names.append(name)
+                                prospect_names.append(name)
                             
-                            tab_labels = [f"📍 {name[:25]}..." if len(name) > 25 else f"📍 {name}" for name in business_names]
+                            tab_labels = [f"📍 {name[:25]}..." if len(name) > 25 else f"📍 {name}" for name in prospect_names]
                             selected_tabs = st.tabs(tab_labels)
                             
-                            for i, (tab, idx) in enumerate(zip(selected_tabs, st.session_state.selected_business_indices)):
+                            for i, (tab, idx) in enumerate(zip(selected_tabs, st.session_state.selected_prospect_indices)):
                                 with tab:
-                                    business_data = selected_business_data.loc[selected_business_data.index == idx].iloc[0]
-                                    st.markdown(format_business_data_html(business_data), unsafe_allow_html=True)
+                                    prospect_data = selected_prospect_data.loc[selected_prospect_data.index == idx].iloc[0]
+                                    st.markdown(format_prospect_data_html(prospect_data), unsafe_allow_html=True)
                                     
                                     # Add native Streamlit button for Salesforce action
-                                    business_idx = business_data.name if hasattr(business_data, 'name') else None
-                                    sf_key = f"sf_push_tab_{i}_{business_idx}"
-                                    business_name = business_data.get("DBA_NAME", "")
+                                    prospect_id = prospect_data.get("PROSPECT_ID") or prospect_data.get("IDENTIFIER")
+                                    sf_key = f"sf_push_tab_{i}_{prospect_id}"
+                                    prospect_name = prospect_data.get("DBA_NAME", "")
                                     
-                                    # Check if this business was already pushed to Salesforce
-                                    business_idx_str = str(business_idx)
-                                    already_pushed = business_idx_str in get_sf_business_ids()
+                                    # Check if this prospect was already pushed to Salesforce
+                                    prospect_id_str = str(prospect_id)
+                                    already_pushed = prospect_id_str in get_sf_prospect_ids()
                                     
                                     # Create a smaller, more compact layout with columns
                                     if already_pushed:
                                         # No button needed, so no columns needed
                                         pass
                                     else:
-                                        # Determine column ratio based on business name length - more space for longer names
+                                        # Determine column ratio based on prospect name length - more space for longer names
                                         # This helps ensure the button text stays on one line
                                         left_col_size = 1
                                         right_col_size = 1
                                         
-                                        if len(business_name) <= 10:
+                                        if len(prospect_name) <= 10:
                                             # Very short names
                                             left_col_size, right_col_size = 2, 1  # 2:1 ratio
-                                        elif len(business_name) <= 20:
+                                        elif len(prospect_name) <= 20:
                                             # Medium length names
                                             left_col_size, right_col_size = 1, 1  # 1:1 ratio
                                         else:
@@ -4757,29 +6129,56 @@ def main():
                                         # Create a dynamic layout with columns for left-justified button
                                         sf_cols = create_button_layout()
                                         with sf_cols[0]:  # Button in left column
-                                            # Updated button label with business name
-                                            button_label = f"Send {business_name} to Salesforce"
-                                            
+                                            # Updated button label with prospect name
+                                            button_label = f"Add {prospect_name} to Salesforce Queue"
+
                                             push_button = st.button(button_label, type="primary", key=sf_key)
                                             
                                             if push_button:
-                                                # Get the business ID
-                                                business_idx = business_data.name if hasattr(business_data, 'name') else None
+                                                # Check if there are multiple contacts available for this prospect
+                                                top_contacts = prospect_data.get("TOP10_CONTACTS", {})
+                                                contacts_available = []
                                                 
-                                                # Add to Salesforce
-                                                add_business_to_salesforce(business_idx)
+                                                # Parse TOP10_CONTACTS - handle pandas Series
+                                                has_contacts = False
+                                                if hasattr(top_contacts, 'empty'):  # pandas Series
+                                                    has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+                                                    if has_contacts:
+                                                        top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+                                                else:
+                                                    has_contacts = bool(top_contacts)
                                                 
-                                                # Rerun to update UI
-                                                st.rerun()
-                                                st.write("Updating Salesforce tab data...")
+                                                if has_contacts:
+                                                    if isinstance(top_contacts, str):
+                                                        try:
+                                                            import json
+                                                            contacts_obj = json.loads(top_contacts)
+                                                        except:
+                                                            contacts_obj = {}
+                                                    else:
+                                                        contacts_obj = top_contacts
+                                                    
+                                                    if isinstance(contacts_obj, dict) and contacts_obj:
+                                                        contacts_available = list(contacts_obj.values())
+                                                    elif isinstance(contacts_obj, list) and contacts_obj:
+                                                        contacts_available = contacts_obj
                                                 
-                                                # Show current state
-                                                st.write(f"Total businesses in Salesforce: {st.session_state.sf_pushed_count}")
-                                                st.write(f"Business IDs in Salesforce: {st.session_state.sf_business_ids}")
+                                                # Use the first contact from TOP10_CONTACTS if available
+                                                selected_contact = None
+                                                if len(contacts_available) > 0:
+                                                    selected_contact = contacts_available[0]
                                                 
-                                                # Continue only if the user clicks to confirm
-                                                if st.button("Continue", key=f"tab_continue_{i}"):
-                                                    st.rerun()
+                                                # Add this prospect to staging instead of direct submission
+                                                if add_prospect_to_staging(prospect_data, selected_contact):
+                                                    success_msg = f'<p style="color:#0c8a15; font-size:11px; margin:0; padding:0; font-weight:500;">✅ {prospect_name} sent to Salesforce Queue</p>'
+                                                    st.markdown(success_msg, unsafe_allow_html=True)
+                                                    if len(contacts_available) > 1:
+                                                        st.info("💡 Go to the Salesforce tab to review contacts and submit")
+                                                    else:
+                                                        st.info("💡 Go to the Salesforce tab to review and submit")
+                                                else:
+                                                    warning_msg = f'<p style="color:#ff8c00; font-size:11px; margin:0; padding:0; font-weight:500;">⚠️ {prospect_name} already sent to Salesforce Queue</p>'
+                                                    st.markdown(warning_msg, unsafe_allow_html=True)
                         
 
                     
@@ -4816,10 +6215,10 @@ def main():
                         }])
                         
                         # Add search center as a distinctive layer (star/target icon style)
-                        # Use same radius scaling as business points, with a multiplier to make it slightly larger
-                        # Use appropriate scale based on whether businesses are selected and include zoom scaling
-                        if st.session_state.selected_business_indices:
-                            # Match the same zoom-based scaling logic as selected businesses
+                        # Use same radius scaling as prospect points, with a multiplier to make it slightly larger
+                        # Use appropriate scale based on whether prospectes are selected and include zoom scaling
+                        if st.session_state.selected_prospect_indices:
+                            # Match the same zoom-based scaling logic as selected prospectes
                             current_zoom = st.session_state.map_view_state["zoom"]
                             map_view_radius_multiplier = st.session_state.selected_radius_scale
                             if current_zoom >= 15:
@@ -4830,9 +6229,9 @@ def main():
                                 map_view_radius_multiplier *= 2.0  # Medium-small size
                             else:
                                 map_view_radius_multiplier *= 2.5  # Reduced for far zoom
-                            search_center_radius = initial_radius * map_view_radius_multiplier * 1.2  # Slightly larger than business points
+                            search_center_radius = initial_radius * map_view_radius_multiplier * 1.2  # Slightly larger than prospect points
                         else:
-                            # Use same scaling as unselected business points
+                            # Use same scaling as unselected prospect points
                             search_center_radius = initial_radius * st.session_state.initial_radius_scale * 1.5
                         
                         layers.append(
@@ -4849,10 +6248,10 @@ def main():
                             )
                         )
                     
-                    if st.session_state.selected_business_indices:
+                    if st.session_state.selected_prospect_indices:
                         # Calculate dynamic radius based on zoom level and selection count
                         current_zoom = st.session_state.map_view_state["zoom"]
-                        selection_count = len(st.session_state.selected_business_indices)
+                        selection_count = len(st.session_state.selected_prospect_indices)
                         
                         # Dynamic radius calculation with better zoom scaling (reduced by ~50% for better visual clarity)
                         if selection_count == 1:
@@ -4883,10 +6282,10 @@ def main():
                             
                             dynamic_radius_multiplier = base_multiplier * zoom_scale
                         
-                        # Separate selected and non-selected businesses
-                        non_selected_data = map_data[~map_data.index.isin(st.session_state.selected_business_indices)]
+                        # Separate selected and non-selected prospectes
+                        non_selected_data = map_data[~map_data.index.isin(st.session_state.selected_prospect_indices)]
                         
-                        # Create separate radius calculation for map view selected businesses (reduced by ~50% for better visual clarity)
+                        # Create separate radius calculation for map view selected prospectes (reduced by ~50% for better visual clarity)
                         map_view_radius_multiplier = st.session_state.selected_radius_scale
                         if current_zoom >= 15:
                             map_view_radius_multiplier *= 1.0  # Smaller for very close zoom
@@ -4897,7 +6296,7 @@ def main():
                         else:
                             map_view_radius_multiplier *= 2.5  # Reduced for far zoom
                         
-                        # Add non-selected businesses layer (precompute fill_color)
+                        # Add non-selected prospectes layer (precompute fill_color)
                         if not non_selected_data.empty:
                             non_selected_data = non_selected_data.copy()
                             non_selected_data["fill_color"] = non_selected_data.apply(lambda row: get_map_point_color(row, selected=False), axis=1)
@@ -4913,11 +6312,11 @@ def main():
                                 )
                             )
                         
-                        # Add each selected business as a separate layer with 3D columns/pillars
-                        for i, business_idx in enumerate(st.session_state.selected_business_indices):
-                            if business_idx in map_data.index:
-                                selected_data = map_data.loc[[business_idx]]
-                                # Use ColumnLayer for selected businesses to make them stand out as 3D pillars
+                        # Add each selected prospect as a separate layer with 3D columns/pillars
+                        for i, prospect_idx in enumerate(st.session_state.selected_prospect_indices):
+                            if prospect_idx in map_data.index:
+                                selected_data = map_data.loc[[prospect_idx]]
+                                # Use ColumnLayer for selected prospectes to make them stand out as 3D pillars
                                 selected_data = selected_data.copy()
                                 selected_data["fill_color"] = selected_data.apply(lambda row: get_map_point_color(row, selected=True), axis=1)
                                 layers.append(
@@ -4934,7 +6333,7 @@ def main():
                                     )
                                 )
                     else:
-                        # No selection - show all businesses, precompute fill_color
+                        # No selection - show all prospectes, precompute fill_color
                         map_data = map_data.copy()
                         map_data["fill_color"] = map_data.apply(lambda row: get_map_point_color(row, selected=False), axis=1)
                         layers.append(
@@ -4979,7 +6378,7 @@ def main():
                     
                     # No longer need JavaScript for Salesforce buttons - using native Streamlit buttons
                     
-                    #st.markdown(f"**Total Businesses Displayed:** {len(map_data)}")
+                    #st.markdown(f"**Total prospectes Displayed:** {len(map_data)}")
                     st.pydeck_chart(deck)
                     
                     # Map controls styling
@@ -5077,7 +6476,7 @@ def main():
                             style_col4
                         )
                 else:
-                    # No business data, but check for search center location
+                    # No prospect data, but check for search center location
                     if "search_center_location" in st.session_state:
                         # Show map with search center point only
                         search_center = st.session_state["search_center_location"]
@@ -5125,7 +6524,7 @@ def main():
                         )
                         
                         # Create layers with search center point
-                        # Use same radius scaling as business points for consistency
+                        # Use same radius scaling as prospect points for consistency
                         search_center_radius = 300 * st.session_state.initial_radius_scale
                         layers = [
                             pdk.Layer(
@@ -5161,7 +6560,7 @@ def main():
                             tooltip=tooltip
                         )
                         
-                        st.info(f"No businesses found within {search_center['radius_miles']} miles of '{search_center['address']}', but showing your search center location.")
+                        st.info(f"No prospectes found within {search_center['radius_miles']} miles of '{search_center['address']}', but showing your search center location.")
                         st.pydeck_chart(deck)
                         
                         # Add map controls for search center point size adjustment
@@ -5259,7 +6658,7 @@ def main():
                                 style_col4
                             )
                     else:
-                        # No business data and no search center
+                        # No prospect data and no search center
                         init_session_state_key("map_view_state", {
                             "latitude": 39.8283,
                             "longitude": -98.5795,
@@ -5301,217 +6700,444 @@ def main():
             # Removed redundant message - already shown in active filters section
     
     with tab3:
-        st.markdown("""
-        <div style="padding: 20px; border-radius: 12px; background: linear-gradient(135deg, #f8faff 0%, #ffffff 100%); 
-                    border: 1px solid #e6e9f3; box-shadow: 0 4px 20px rgba(38, 42, 255, 0.08);">
-            <h2 style="color: #262aff; margin-bottom: 20px; display: flex; align-items: center;">
-                <span style="font-size: 28px; margin-right: 10px;">🚀</span> Salesforce Integration
-            </h2>
-            <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
-                This tab will display Salesforce integration status, push history, and configuration options.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
         
-        # Debug version info - helps track which approach is running
-        st.caption(f"Version: Simple ID List (v3.0) | Last updated: {st.session_state.sf_last_update}")
+        # Get staged prospects
+        staged_prospects = get_staged_prospects()
         
-        # Status Dashboard
-        st.subheader("Lead Push Status")
+        # Summary row
+        if staged_prospects:
+            st.info(f"{len(staged_prospects)} prospects selected for Salesforce lead")
+        else:
+            st.info("No prospects currently staged. Use the 'Add Selected to Salesforce Queue' button in List View or Map View to add prospects.")
+
+        # Message display area (for success/error messages)
+        message_container = st.container()
         
-        # Debug information
-        if st.checkbox("Show Debug Info", key="sf_debug"):
-            st.write("sf_business_ids:", get_sf_business_ids())
-            st.write("sf_pushed_count:", get_sf_pushed_count())
-            
-            # Build business info from filtered_df if available
-            business_details = []
-            if "filtered_df" in st.session_state and not st.session_state.filtered_df.empty:
-                filtered_df = st.session_state.filtered_df
-                for business_id in get_sf_business_ids():
-                    # Try both string and numeric comparisons
-                    try:
-                        numeric_id = int(business_id)
-                        matching_rows = filtered_df[filtered_df.index == numeric_id]
-                    except ValueError:
-                        matching_rows = filtered_df[filtered_df.index.astype(str) == business_id]
-                    
-                    if not matching_rows.empty:
-                        row = matching_rows.iloc[0]
-                        business_details.append({
-                            "ID": business_id,
-                            "Name": row.get("DBA_NAME", "Unknown"),
-                            "City": row.get("CITY", ""),
-                            "State": row.get("STATE", "")
-                        })
-            
-            if business_details:
-                st.write("Business details:")
-                st.json(business_details)
-            
-            # Also check for session state keys
-            st.write("All session state keys:", list(st.session_state.keys()))
-        
-        # Status dashboard
-        num_selected = get_sf_pushed_count()
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Selected for Push", num_selected, help="Number of businesses marked for Salesforce push")
-            
-            if num_selected > 0 and st.checkbox("Show Selected Businesses", key="show_sf_selected"):
-                # Try to get business names from filtered_df
-                if "filtered_df" in st.session_state and not st.session_state.filtered_df.empty:
-                    filtered_df = st.session_state.filtered_df
-                    
-                    # Get the business IDs from session state
-                    business_ids = get_sf_business_ids()
-                    
-                    # Try to find each business in the filtered_df
-                    found_businesses = []
-                    for business_id in business_ids:
-                        # Try different formats of the ID
-                        business_found = False
+        if staged_prospects:
+            # Create table data for display
+            table_data = []
+            for prospect in staged_prospects:
+                table_data.append({
+                    'Company': prospect.get('company', 'N/A'),
+                    'Contact': f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip() or 'N/A',
+                    'Email': prospect.get('email', 'N/A'),
+                    'City': prospect.get('city', 'N/A'),
+                    'State': prospect.get('state', 'N/A'),
+                    'Phone': prospect.get('phone', 'N/A'),
+                    'ID': prospect.get('prospect_id', 'N/A')
+                })
                         
-                        # Try as string
-                        matching_str = filtered_df[filtered_df.index.astype(str) == business_id]
-                        if not matching_str.empty:
-                            found_businesses.append({
-                                "ID": business_id,
-                                "Name": matching_str.iloc[0].get("DBA_NAME", "Unknown")
-                            })
-                            business_found = True
-                            continue
+            # Individual prospect details sections - showing only non-null/non-N/A details
+            st.subheader("Prospect Details")
+            
+            for i, prospect in enumerate(staged_prospects):
+                prospect_id = prospect.get('prospect_id', f'prospect_{i}')
+                company_name = prospect.get('company', 'Unknown Company')
+                
+                # Enhanced validation that includes contact selection check
+                validation_result = validate_staged_prospect_enhanced(prospect)
+                
+                status_emoji = "✅" if validation_result['is_valid'] else "❌"
+                status_text = "" if validation_result['is_valid'] else " - Contact Selection Required"
+                status_color = "#2d7d32" if validation_result['is_valid'] else "#d32f2f"
+                
+                # Create expandable section for each prospect
+                with st.expander(f"{status_emoji} {company_name} {status_text}", expanded=False):
+                    
+                    # Helper function to check if a value is meaningful (not null, empty, or 'N/A')
+                    def is_meaningful_value(value):
+                        if value is None:
+                            return False
+                        if isinstance(value, str):
+                            return value.strip() not in ['', 'N/A', 'NA', 'n/a', 'None']
+                        return bool(value)
+                    
+                    # Contact Selection Section
+                    st.markdown("**👤 Contact Selection**")
+                    
+                    # Get contact data from the staged prospect (prioritize TOP10_CONTACTS only)
+                    contacts_available = []
+                    contact_options = {}
+                    
+                    # Parse TOP10_CONTACTS from the staged prospect data
+                    top_contacts = prospect.get("top10_contacts")
+                    
+                    # Handle different data types for top_contacts
+                    has_contacts = False
+                    if hasattr(top_contacts, 'empty'):  # pandas Series
+                        has_contacts = not top_contacts.empty and not top_contacts.isna().all()
+                        if has_contacts:
+                            top_contacts = top_contacts.iloc[0] if len(top_contacts) > 0 else {}
+                    else:
+                        has_contacts = bool(top_contacts)
+                    
+                    if has_contacts:
+                        if isinstance(top_contacts, str):
+                            try:
+                                import json
+                                contacts_obj = json.loads(top_contacts)
+                            except:
+                                contacts_obj = {}
+                        else:
+                            contacts_obj = top_contacts
                         
-                        # Try as int
+                        if isinstance(contacts_obj, dict) and contacts_obj:
+                            contacts_available = list(contacts_obj.values())
+                        elif isinstance(contacts_obj, list) and contacts_obj:
+                            contacts_available = contacts_obj
+                    
+                    # If no TOP10_CONTACTS available, add default "Contact Unknown" option
+                    if not contacts_available:
+                        default_contact = {
+                            "name": "Contact Unknown",
+                            "email_address": "",
+                            "direct_phone_number": "",
+                            "mobile_phone": "",
+                            "job_title": "Update Contact Info in Salesforce after Lead Creation",
+                            "source": "default"
+                        }
+                        contacts_available = [default_contact]
+                    
+                    # Check if main table contact is already in TOP10_CONTACTS to avoid duplicates
+                    def is_similar_contact(contact1, contact2):
+                        """Check if two contacts are similar enough to be considered duplicates"""
+                        # Safely get email addresses
+                        email1 = (contact1.get("email_address") or "").strip().lower() if contact1.get("email_address") else ""
+                        email2 = (contact2.get("email_address") or "").strip().lower() if contact2.get("email_address") else ""
+                        if email1 and email2 and email1 == email2:
+                            return True
+                        
+                    
+                    # Create contact selection UI
+                    if len(contacts_available) > 1:
+                        # Multiple contacts available - show selection
+                        st.info(f"📋 {len(contacts_available)} contacts available. Select which contact to use for Salesforce:")
+                        
+                        # Create readable options for each contact
+                        contact_options = {"⚠️ Please select a contact...": -1}  # Default "no selection" option
+                        for idx, contact in enumerate(contacts_available):
+                            contact_name = contact.get("name", "No name")
+                            contact_title = contact.get("job_title", "No title")
+                            contact_email = contact.get("email_address", "No email")
+                            contact_phone = contact.get("direct_phone_number", "") or contact.get("mobile_phone", "")
+                            source_indicator = " (Default)" if contact.get("source") == "default" else ""
+                            
+                            # Create a display label
+                            contact_info_parts = []
+                            if contact_name and contact_name != "No name":
+                                contact_info_parts.append(contact_name)
+                            if contact_title and contact_title != "No title":
+                                contact_info_parts.append(f"({contact_title})")
+                            
+                            display_label = " ".join(contact_info_parts) if contact_info_parts else f"Contact {idx + 1}"
+                            display_label += source_indicator
+                            contact_options[display_label] = idx
+                        
+                        # Get current selection (default to no selection for multiple contacts)
+                        current_selection_key = f"contact_selection_{prospect_id}"
+                        if current_selection_key not in st.session_state:
+                            st.session_state[current_selection_key] = 0  # Default to "Please select" option
+                        
+                        # Ensure we have a valid integer index
                         try:
-                            numeric_id = int(business_id)
-                            matching_int = filtered_df[filtered_df.index == numeric_id]
-                            if not matching_int.empty:
-                                found_businesses.append({
-                                    "ID": business_id,
-                                    "Name": matching_int.iloc[0].get("DBA_NAME", "Unknown")
-                                })
-                                business_found = True
-                                continue
-                        except ValueError:
+                            current_index = int(st.session_state[current_selection_key])
+                            if current_index >= len(contact_options):
+                                current_index = 0
+                        except (ValueError, TypeError):
+                            current_index = 0
+                        
+                        # Get the options as a list
+                        contact_option_list = list(contact_options.keys())
+                        
+                        # Track previous selection to detect changes
+                        previous_selection_key = f"prev_contact_selection_{prospect_id}"
+                        previous_selection = st.session_state.get(previous_selection_key, None)
+                        
+                        selected_contact_idx = st.selectbox(
+                            "Choose contact:",
+                            options=contact_option_list,
+                            index=current_index,
+                            key=current_selection_key + "_selectbox",  # Different key to avoid conflicts
+                            help="Select which contact information to use when submitting to Salesforce"
+                        )
+                        
+                        # Update session state with the selected index
+                        try:
+                            selected_index = contact_option_list.index(selected_contact_idx)
+                            
+                            # Check if selection changed and force rerun for immediate validation update
+                            if previous_selection != selected_index:
+                                st.session_state[previous_selection_key] = selected_index
+                                st.session_state[current_selection_key] = selected_index
+                                st.rerun()
+                            
+                            st.session_state[current_selection_key] = selected_index
+                            
+                            # Check if a valid contact was selected
+                            if contact_options[selected_contact_idx] == -1:
+                                # No contact selected - record is invalid
+                                selected_contact = None
+                                st.warning("⚠️ Please select a contact to proceed with submission.")
+                            else:
+                                selected_contact = contacts_available[contact_options[selected_contact_idx]]
+                        except (ValueError, IndexError):
+                            # Fallback to no selection
+                            st.session_state[current_selection_key] = 0
+                            selected_contact = None
+                        
+                        # Show selected contact details only if a contact is selected
+                        if selected_contact:
+                            st.markdown("**Selected Contact Details:**")
+                            contact_details_data = {}
+                            if is_meaningful_value(selected_contact.get("name")):
+                                contact_details_data["Name"] = [selected_contact["name"]]
+                            if is_meaningful_value(selected_contact.get("job_title")):
+                                contact_details_data["Job Title"] = [selected_contact["job_title"]]
+                            if is_meaningful_value(selected_contact.get("email_address")):
+                                contact_details_data["Email"] = [selected_contact["email_address"]]
+                            if is_meaningful_value(selected_contact.get("direct_phone_number")):
+                                contact_details_data["Direct Phone"] = [selected_contact["direct_phone_number"]]
+                            if is_meaningful_value(selected_contact.get("mobile_phone")):
+                                contact_details_data["Mobile Phone"] = [selected_contact["mobile_phone"]]
+                            
+                            if contact_details_data:
+                                contact_details_df = pd.DataFrame(contact_details_data)
+                                st.dataframe(contact_details_df, hide_index=True, use_container_width=True)
+                            else:
+                                st.warning("Selected contact has no meaningful contact information.")
+                        else:
+                            # No contact selected - this is expected for the "Please select" option
                             pass
                         
-                        # If not found, add a placeholder
-                        if not business_found:
-                            found_businesses.append({
-                                "ID": business_id,
-                                "Name": f"Business {business_id}"
-                            })
-                    
-                    # Show the businesses
-                    if found_businesses:
-                        st.dataframe(pd.DataFrame(found_businesses))
+                        # Store the selected contact in session state for use during submission
+                        st.session_state[f"selected_contact_for_{prospect_id}"] = selected_contact
+                        
+                    elif len(contacts_available) == 1:
+                        # Only one contact available - show info and auto-select
+                        contact = contacts_available[0]
+                        source_text = "" if contact.get("source") == "main_table" else "from contact hierarchy"
+                        st.info(f"📋 Using the only available contact {source_text}:")
+                        
+                        # Show contact details
+                        contact_details_data = {}
+                        if is_meaningful_value(contact.get("name")):
+                            contact_details_data["Name"] = [contact["name"]]
+                        if is_meaningful_value(contact.get("job_title")):
+                            contact_details_data["Job Title"] = [contact["job_title"]]
+                        if is_meaningful_value(contact.get("email_address")):
+                            contact_details_data["Email"] = [contact["email_address"]]
+                        if is_meaningful_value(contact.get("direct_phone_number")):
+                            contact_details_data["Direct Phone"] = [contact["direct_phone_number"]]
+                        if is_meaningful_value(contact.get("mobile_phone")):
+                            contact_details_data["Mobile Phone"] = [contact["mobile_phone"]]
+                        
+                        if contact_details_data:
+                            contact_details_df = pd.DataFrame(contact_details_data)
+                            st.dataframe(contact_details_df, hide_index=True, use_container_width=True)
+                        else:
+                            st.warning("Available contact has no meaningful contact information.")
+                        
+                        # Store the contact for submission
+                        st.session_state[f"selected_contact_for_{prospect_id}"] = contact
+                        
                     else:
-                        st.info("No business details available")
-                else:
-                    # Simple display without details
-                    st.write(f"Business IDs: {st.session_state.get('sf_business_ids', [])}")
-            
-            # Add a manual reset option
-            if st.button("Reset Salesforce Data"):
-                # Store current state for debugging
-                old_ids = list(get_sf_business_ids())
-                old_count = get_sf_pushed_count()
-                
-                # Reset all Salesforce-related variables
-                st.session_state.sf_business_ids = []
-                st.session_state.sf_pushed_count = 0
-                st.session_state.sf_last_update = datetime.now().isoformat()
-                
-                # Also clear any other Salesforce-related variables that might exist
-                for key in list(st.session_state.keys()):
-                    if key.startswith("sf_") and key not in ["sf_business_ids", "sf_pushed_count", "sf_last_update"]:
-                        del st.session_state[key]
-                
-                # Debug output
-                st.write(f"Reset {old_count} businesses from Salesforce")
-                st.write(f"Cleared IDs: {old_ids}")
-                
-                show_success_message("Salesforce data reset successfully")
-                st.rerun()
-                
-        with col2:
-            st.metric("Successfully Pushed", 0, help="Number of leads successfully pushed to Salesforce")
-        with col3:
-            st.metric("Failed", 0, help="Number of leads that failed to push")
-            
-        # Salesforce Configuration
-        st.subheader("Configuration")
-        
-        # Tabs for different configuration sections
-        config_tab1, config_tab2, config_tab3 = st.tabs(["Connection", "Field Mapping", "Workflow"])
-        
-        with config_tab1:
-            st.markdown("### Salesforce Connection Settings")
-            st.text_input("Salesforce Instance URL", placeholder="https://yourinstance.salesforce.com", disabled=True)
-            st.text_input("API Username", placeholder="api.user@example.com", disabled=True)
-            st.text_input("API Key", placeholder="••••••••••••••••", type="password", disabled=True)
-            st.checkbox("Use Sandbox Environment", value=True, disabled=True)
-            
-            st.info("Salesforce API credentials will be configured when the integration is ready.")
-            
-        with config_tab2:
-            st.markdown("### Field Mapping")
-            st.markdown("""
-            The following fields will be mapped to Salesforce Lead object:
-            
-            | Prospect Tool Field | Salesforce Field |
-            | ------------------- | ---------------- |
-            | DBA_NAME | Company |
-            | CONTACT_NAME | Name |
-            | CONTACT_EMAIL | Email |
-            | CONTACT_PHONE | Phone |
-            | ADDRESS | Street |
-            | CITY | City |
-            | STATE | State |
-            | ZIP | PostalCode |
-            | REVENUE | AnnualRevenue |
-            | NUMBER_OF_EMPLOYEES | NumberOfEmployees |
-            | PRIMARY_INDUSTRY | Industry |
-            """)
-            
-            st.info("Custom field mappings will be available when the integration is ready.")
-            
-        with config_tab3:
-            st.markdown("### Workflow Configuration")
-            st.selectbox(
-                "Lead Owner Assignment",
-                ["Round Robin", "By Territory", "By Industry", "Manual Assignment"],
-                disabled=True
-            )
-            st.selectbox(
-                "Lead Status",
-                ["New", "Working", "Qualified", "Unqualified"],
-                index=0,
-                disabled=True
-            )
-            st.multiselect(
-                "Trigger Workflow Rules",
-                ["Lead Assignment", "Lead Scoring", "Email Notification", "Task Creation"],
-                disabled=True
-            )
-            
-            st.info("Workflow configuration will be available when the integration is ready.")
-        
-        # API Test Section
-        st.subheader("API Testing")
-        st.write("This section will allow testing the Salesforce API connection and lead push functionality.")
-        
-        test_col1, test_col2 = st.columns(2)
-        with test_col1:
-            st.button("Test Connection", disabled=True)
-        with test_col2:
-            st.button("Push Test Lead", disabled=True)
-            
-        st.info("API testing will be available when the integration is ready.")
+                        # No contacts available
+                        st.warning("📋 No contact information available for this prospect.")
+                        st.session_state[f"selected_contact_for_{prospect_id}"] = None
+                    
+                    
+                    # Collect all meaningful details
+                    meaningful_details = []
+                    
+                    # Company Information
+                    company_details = []
+                    if is_meaningful_value(prospect.get('company')):
+                        company_details.append(f"**Company:** {prospect['company']}")
+                    if is_meaningful_value(prospect.get('industry')):
+                        company_details.append(f"**Industry:** {prospect['industry']}")
+                    if is_meaningful_value(prospect.get('revenue')):
+                        company_details.append(f"**Revenue:** {prospect['revenue']}")
+                    if is_meaningful_value(prospect.get('employees')):
+                        company_details.append(f"**Employees:** {prospect['employees']}")
+                    if is_meaningful_value(prospect.get('website')):
+                        company_details.append(f"**Website:** {prospect['website']}")
+                    if is_meaningful_value(prospect.get('mcc_code')):
+                        company_details.append(f"**MCC Code:** {prospect['mcc_code']}")
+                    
+                    # Location Information
+                    location_details = []
+                    if is_meaningful_value(prospect.get('address')):
+                        location_details.append(f"**Address:** {prospect['address']}")
+                    if is_meaningful_value(prospect.get('city')):
+                        location_details.append(f"**City:** {prospect['city']}")
+                    if is_meaningful_value(prospect.get('state')):
+                        location_details.append(f"**State:** {prospect['state']}")
+                    if is_meaningful_value(prospect.get('zip')):
+                        location_details.append(f"**ZIP:** {prospect['zip']}")
+                    
+                    # Display details in a clean table format organized by sections
+                    if any([company_details, location_details]):
+                        # Company Information Table
+                        if company_details:
+                            st.markdown("**🏢 Company Information**")
+                            company_data = {}
+                            for detail in company_details:
+                                parts = detail.split(":** ", 1)
+                                if len(parts) == 2:
+                                    field_name = parts[0].replace("**", "")
+                                    field_value = parts[1]
+                                    company_data[field_name] = [field_value]
+                            company_df = pd.DataFrame(company_data)
+                            st.dataframe(company_df, hide_index=True, use_container_width=True)
+                            st.markdown("")
+                        # Location Information Table
+                        if location_details:
+                            st.markdown("**📍 Location Information**")
+                            location_data = {}
+                            for detail in location_details:
+                                parts = detail.split(":** ", 1)
+                                if len(parts) == 2:
+                                    field_name = parts[0].replace("**", "")
+                                    field_value = parts[1]
+                                    location_data[field_name] = [field_value]
+                            location_df = pd.DataFrame(location_data)
+                            st.dataframe(location_df, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("No additional details available for this prospect.")
+                    # Show validation errors if invalid
+                    if not validation_result['is_valid']:
+                        st.error(f"**Missing Required Fields:** {', '.join(validation_result['missing_fields'])}")
+                    # Action buttons for this prospect
+                    col_remove, col_spacer = st.columns([1, 3])
+                    with col_remove:
+                        if st.button(f"🗑️ Remove", key=f"remove_{prospect_id}", type="secondary"):
+                            remove_prospect_from_staging(prospect_id)
+                            with message_container:
+                                st.success(f"✅ Removed {company_name}")
+                            st.rerun()
 
+    
+            # Bulk action buttons with proper alignment
+            st.markdown("---")
+            st.subheader("Actions")
+            
+            # Create custom CSS for aligned buttons and indicator
+            st.markdown("""
+            <style>
+            .bulk-actions-container {
+                display: flex;
+                align-items: flex-start;
+                gap: 15px;
+                margin: 20px 0;
+            }
+            .action-button-container {
+                flex: 0 0 auto;
+            }
+            .validation-indicator-container {
+                flex: 1;
+                margin-left: auto;
+                display: flex;
+                justify-content: flex-end;
+            }
+            .validation-indicator {
+                background: linear-gradient(135deg, #f8faff 0%, #ffffff 100%);
+                border: 1px solid #e6e9f3;
+                border-radius: 12px;
+                padding: 20px;
+                text-align: center;
+                height: 48px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 160px;
+                box-shadow: 0 2px 8px rgba(38, 42, 255, 0.08);
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # Create columns with proper spacing: 2 narrow for buttons, 1 wide for indicator
+            col1, col2, col_spacer, col3 = st.columns([1, 1, 0.5, 1.5])
+            
+            with col1:
+                if st.button("Submit All to Salesforce", type="primary", key="submit_all_staged", use_container_width=True):
+                    # Validate all prospects before submission
+                    validation_errors = []
+                    for i, prospect in enumerate(staged_prospects):
+                        validation_result = validate_staged_prospect(prospect)
+                        if not validation_result['is_valid']:
+                            validation_errors.append(f"Prospect {i+1}: {', '.join(validation_result['errors'])}")
+                    
+                    if validation_errors:
+                        with message_container:
+                            st.error(f"❌ Cannot submit - Validation errors found:\n" + "\n".join(validation_errors))
+                    else:
+                        # Submit all prospects
+                        with st.spinner("Submitting prospects to Salesforce..."):
+                            try:
+                                result = submit_staged_prospects_to_sf()
+                                if result['success']:
+                                    # Clear staging after successful submission
+                                    clear_staging()
+                                    with message_container:
+                                        st.success(f"✅ Successfully submitted {result['success_count']} prospects to Salesforce!")
+                                        if result.get('duplicate_count', 0) > 0:
+                                            st.warning(f"⚠️ {result['duplicate_count']} prospects were duplicates and skipped")
+                                        if result.get('error_count', 0) > 0:
+                                            st.error(f"❌ {result['error_count']} prospects failed to submit")
+                                    st.rerun()
+                                else:
+                                    with message_container:
+                                        # Show more specific error for duplicate
+                                        if result.get('duplicate_count', 0) > 0:
+                                            st.error("❌ Submission failed: One or more records already exist (duplicate).")
+                                        else:
+                                            error_message = result.get('message', 'Unknown error')
+                                            st.error(f"❌ Submission failed: {error_message}")
+                                            
+                                            # Show detailed error information if available
+                                            if result.get('results'):
+                                                error_details = []
+                                                for res in result['results']:
+                                                    if res.get('status') == 'error':
+                                                        error_details.append(f"• {res.get('prospect', 'Unknown')}: {res.get('message', 'No details')}")
+                                                
+                                                if error_details:
+                                                    st.error("Error details:\n" + "\n".join(error_details[:5]))  # Show first 5 errors
+                                                    if len(error_details) > 5:
+                                                        st.error(f"... and {len(error_details) - 5} more errors")
+                            except Exception as e:
+                                with message_container:
+                                    st.error(f"❌ Submission failed: {str(e)}")
+            
+            with col2:
+                if st.button("🗑️ Clear All", type="secondary", key="clear_all_staging", use_container_width=True):
+                    clear_staging()
+                    with message_container:
+                        st.success("✅ Cleared successfully")
+                    st.rerun()
+            
+            with col3:
+                # Field validation summary with button-matching height
+                total_prospects = len(staged_prospects)
+                valid_prospects = 0
+                for prospect in staged_prospects:
+                    if validate_staged_prospect_enhanced(prospect)['is_valid']:
+                        valid_prospects += 1
+                
+                # Display validation summary with visual indicators matching button height
+                st.markdown(f"""
+                <div class="validation-indicator">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div style="font-size: 20px; font-weight: 700; color: #262aff;">
+                            {valid_prospects}/{total_prospects}
+                        </div>
+                        <div style="font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; line-height: 1.2;">
+                            Valid<br>Prospects
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+    
 if __name__ == "__main__":
     main()
-
-
